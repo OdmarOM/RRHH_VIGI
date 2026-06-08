@@ -1,0 +1,1630 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api'
+import { Navigation } from '../components/Navigation'
+
+export function Admin() {
+  const [empleados, setEmpleados] = useState([])
+  const [turnos, setTurnos] = useState([])
+  const [plantillas, setPlantillas] = useState([])
+  const [detallesPlantilla, setDetallesPlantilla] = useState([])
+  const [departamentos, setDepartamentos] = useState([])
+  const [filtro, setFiltro] = useState('')
+  const [filtroTurnos, setFiltroTurnos] = useState('')
+  const [tab, setTab] = useState('empleados')
+  const [form, setForm] = useState({ numero_empleado: '', nombre_completo: '', departamento_id: '', puesto: '' })
+  const [turnoForm, setTurnoForm] = useState({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, es_descanso: false, es_por_asistencia: false })
+  const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '' })
+  const [plantillaSeleccionada, setPlantillaSeleccionada] = useState('')
+  const [detallesTemporales, setDetallesTemporales] = useState({})
+  const [editandoEmpleado, setEditandoEmpleado] = useState(null)
+  const [editandoPlantilla, setEditandoPlantilla] = useState(null)
+  const [message, setMessage] = useState('')
+  const [usuariosSistema, setUsuariosSistema] = useState([])
+  const [usuarioForm, setUsuarioForm] = useState({ username: '', password: '', rol_id: '', empleado_id: '' })
+  const [editandoUsuario, setEditandoUsuario] = useState(null)
+  const [supervisoresDepartamentos, setSupervisoresDepartamentos] = useState([])
+  const [roles, setRoles] = useState([])
+  const [ausencias, setAusencias] = useState([])
+  const [reporteHoras, setReporteHoras] = useState([])
+  const [reporteHorasExtra, setReporteHorasExtra] = useState([])
+  const [reporteAsistencias, setReporteAsistencias] = useState([])
+  const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
+  const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '' })
+  const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
+  const [menuAbierto, setMenuAbierto] = useState(false)
+
+  // Calcular semana actual (viernes a viernes) por default
+  useEffect(() => {
+    const hoy = new Date()
+    const diaSemana = hoy.getDay() // 0 = domingo, 6 = sábado
+
+    // Calcular días hasta el viernes más cercano (hacia atrás)
+    // Si hoy es viernes (5), el inicio es hoy
+    // Si hoy es sábado (6), el inicio es ayer (viernes)
+    // Si hoy es domingo (0), el inicio es hace 2 días (viernes)
+    // Si hoy es lunes (1), el inicio es hace 3 días (viernes)
+    // Si hoy es martes (2), el inicio es hace 4 días (viernes)
+    // Si hoy es miércoles (3), el inicio es hace 5 días (viernes)
+    // Si hoy es jueves (4), el inicio es hace 6 días (viernes)
+    let diasHastaViernes = (diaSemana + 2) % 7
+    if (diasHastaViernes === 0) diasHastaViernes = 7
+
+    const viernesPasado = new Date(hoy)
+    viernesPasado.setDate(hoy.getDate() - diasHastaViernes)
+
+    // El fin de la semana es el próximo viernes (6 días después del viernes pasado)
+    const viernesProximo = new Date(viernesPasado)
+    viernesProximo.setDate(viernesPasado.getDate() + 6)
+
+    setReporteForm({
+      fecha_inicio: viernesPasado.toISOString().split('T')[0],
+      fecha_fin: viernesProximo.toISOString().split('T')[0],
+      empleado_id: ''
+    })
+  }, [])
+  const [subTabTurnos, setSubTabTurnos] = useState('turnos-individuales')
+  const [subTabReportes, setSubTabReportes] = useState('horas-laboradas')
+  const [nuevoDetalle, setNuevoDetalle] = useState({ dia: 0, entrada: '', salida: '', tolerancia: 15, esDescanso: false, esPorAsistencia: false })
+  const [turnosTemporales, setTurnosTemporales] = useState({})
+
+  async function cargar() {
+    try {
+      const [empData, turnData, plantData, deptData, userData, supDeptData, rolesData, ausData] = await Promise.all([
+        api.get('/admin/empleados'),
+        api.get('/admin/turnos'),
+        api.get('/admin/plantillas-turnos'),
+        api.get('/admin/departamentos'),
+        api.get('/admin/usuarios-sistema'),
+        api.get('/admin/supervisores-departamentos'),
+        api.get('/admin/roles'),
+        api.get('/admin/ausencias')
+      ])
+      setEmpleados(empData.data)
+      setTurnos(turnData.data)
+      setPlantillas(plantData.data)
+      setDepartamentos(deptData.data)
+      setUsuariosSistema(userData.data)
+      setSupervisoresDepartamentos(supDeptData.data)
+      setRoles(rolesData.data)
+      setAusencias(ausData.data)
+    } catch {}
+  }
+
+  async function crearEmpleado(event) {
+    event.preventDefault()
+    try {
+      await api.post('/admin/empleados', { ...form, departamento_id: Number(form.departamento_id) })
+      setMessage('✅ Colaborador creado')
+      setForm({ numero_empleado: '', nombre_completo: '', departamento_id: 1, puesto: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear colaborador')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  function iniciarEdicionEmpleado(empleado) {
+    setEditandoEmpleado(empleado.id)
+    setForm({
+      numero_empleado: empleado.numero_empleado,
+      nombre_completo: empleado.nombre_completo,
+      departamento_id: empleado.departamento_id,
+      puesto: empleado.puesto
+    })
+  }
+
+  async function actualizarEmpleado(event) {
+    event.preventDefault()
+    if (!editandoEmpleado) return
+    try {
+      await api.put(`/admin/empleados/${editandoEmpleado}`, { ...form, departamento_id: Number(form.departamento_id) })
+      setMessage('✅ Colaborador actualizado')
+      setEditandoEmpleado(null)
+      setForm({ numero_empleado: '', nombre_completo: '', departamento_id: 1, puesto: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al actualizar colaborador')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  function cancelarEdicion() {
+    setEditandoEmpleado(null)
+    setForm({ numero_empleado: '', nombre_completo: '', departamento_id: 1, puesto: '' })
+  }
+
+  async function eliminarEmpleado(id) {
+    if (!confirm('¿Estás seguro de eliminar este colaborador?')) return
+    try {
+      await api.delete(`/admin/empleados/${id}`)
+      setMessage('✅ Colaborador eliminado')
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar colaborador')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function toggleActivoEmpleado(id, activoActual) {
+    try {
+      await api.put(`/admin/empleados/${id}/activo`, null, { params: { activo: !activoActual } })
+      setMessage(`✅ Colaborador ${!activoActual ? 'activado' : 'desactivado'}`)
+      cargar()
+    } catch {
+      setMessage('❌ Error al cambiar estado')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function crearUsuario(event) {
+    event.preventDefault()
+    try {
+      await api.post('/admin/usuarios-sistema', null, {
+        params: {
+          username: usuarioForm.username,
+          password: usuarioForm.password,
+          rol_id: Number(usuarioForm.rol_id),
+          empleado_id: usuarioForm.empleado_id ? Number(usuarioForm.empleado_id) : null
+        }
+      })
+      setMessage('✅ Usuario creado')
+      setUsuarioForm({ username: '', password: '', rol_id: '', empleado_id: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear usuario')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function actualizarUsuario(event) {
+    event.preventDefault()
+    try {
+      await api.put(`/admin/usuarios-sistema/${editandoUsuario}`, null, {
+        params: {
+          username: usuarioForm.username,
+          rol_id: Number(usuarioForm.rol_id),
+          empleado_id: usuarioForm.empleado_id ? Number(usuarioForm.empleado_id) : null
+        }
+      })
+      setMessage('✅ Usuario actualizado')
+      setEditandoUsuario(null)
+      setUsuarioForm({ username: '', password: '', rol_id: '', empleado_id: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al actualizar usuario')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarUsuario(id) {
+    if (!confirm('¿Estás seguro de eliminar este usuario?')) return
+    try {
+      await api.delete(`/admin/usuarios-sistema/${id}`)
+      setMessage('✅ Usuario eliminado')
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar usuario')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  function iniciarEdicionUsuario(usuario) {
+    setEditandoUsuario(usuario.id)
+    setUsuarioForm({
+      username: usuario.username,
+      password: '',
+      rol_id: usuario.rol_id,
+      empleado_id: usuario.empleado_id || ''
+    })
+  }
+
+  function cancelarEdicionUsuario() {
+    setEditandoUsuario(null)
+    setUsuarioForm({ username: '', password: '', rol_id: '', empleado_id: '' })
+  }
+
+  async function toggleActivoUsuario(id, activoActual) {
+    try {
+      await api.put(`/admin/usuarios-sistema/${id}/activo`, null, { params: { activo: !activoActual } })
+      setMessage(`✅ Usuario ${!activoActual ? 'activado' : 'desactivado'}`)
+      cargar()
+    } catch {
+      setMessage('❌ Error al cambiar estado')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function asignarSupervisorDepartamento(usuarioId, departamentoId) {
+    try {
+      await api.post('/admin/supervisores-departamentos', null, { params: { usuario_id: usuarioId, departamento_id: departamentoId } })
+      setMessage('✅ Supervisor asignado al departamento')
+      cargar()
+    } catch {
+      setMessage('❌ Error al asignar supervisor')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarSupervisorDepartamento(relacionId) {
+    try {
+      await api.delete(`/admin/supervisores-departamentos/${relacionId}`)
+      setMessage('✅ Relación eliminada')
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar relación')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function crearAusencia(event) {
+    event.preventDefault()
+    try {
+      await api.post('/admin/ausencias', { 
+        ...ausenciaForm, 
+        empleado_id: Number(ausenciaForm.empleado_id),
+        fecha_inicio: new Date(ausenciaForm.fecha_inicio).toISOString().split('T')[0],
+        fecha_fin: new Date(ausenciaForm.fecha_fin).toISOString().split('T')[0]
+      })
+      setMessage('✅ Ausencia creada')
+      setAusenciaForm({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear ausencia')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function aprobarAusencia(ausenciaId) {
+    try {
+      await api.put(`/admin/ausencias/${ausenciaId}/aprobar`)
+      setMessage('✅ Ausencia aprobada')
+      cargar()
+    } catch {
+      setMessage('❌ Error al aprobar ausencia')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarAusencia(ausenciaId) {
+    try {
+      await api.delete(`/admin/ausencias/${ausenciaId}`)
+      setMessage('✅ Ausencia eliminada')
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar ausencia')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function generarReporteHorasLaboradas(event) {
+    event.preventDefault()
+    try {
+      const params = new URLSearchParams()
+      params.append('fecha_inicio', reporteForm.fecha_inicio)
+      params.append('fecha_fin', reporteForm.fecha_fin)
+      if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      
+      const { data } = await api.get(`/admin/reportes/horas-laboradas?${params}`)
+      setReporteHoras(data)
+      setMessage(`✅ Reporte generado: ${data.length} registros`)
+    } catch {
+      setMessage('❌ Error al generar reporte')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function generarReporteHorasExtra(event) {
+    event.preventDefault()
+    try {
+      const params = new URLSearchParams()
+      params.append('fecha_inicio', reporteForm.fecha_inicio)
+      params.append('fecha_fin', reporteForm.fecha_fin)
+      if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+
+      const { data } = await api.get(`/admin/reportes/horas-extra?${params}`)
+      setReporteHorasExtra(data)
+      setMessage(`✅ Reporte generado: ${data.length} registros`)
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo generar el reporte'))
+    }
+  }
+
+  async function generarReporteSalidasTemporales(event) {
+    event.preventDefault()
+    try {
+      const params = new URLSearchParams()
+      params.append('fecha_inicio', reporteForm.fecha_inicio)
+      params.append('fecha_fin', reporteForm.fecha_fin)
+      if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+
+      const { data } = await api.get(`/admin/reportes/salidas-temporales?${params}`)
+      setReporteSalidasTemporales(data)
+      setMessage(`✅ Reporte generado: ${data.length} registros`)
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo generar el reporte'))
+    }
+  }
+
+  async function aprobarHoraExtra(asistencia_id) {
+    try {
+      await api.put(`/admin/incidencias/horas-extra/${asistencia_id}/aprobar-rrhh`)
+      setReporteHorasExtra(reporteHorasExtra.map(r => r.id === asistencia_id ? { ...r, validado_rrhh: true } : r))
+      setMessage('✅ Horas extra aprobadas por RRHH')
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
+    }
+  }
+
+  async function generarReporteAsistencias(event) {
+    event.preventDefault()
+    try {
+      const params = new URLSearchParams()
+      params.append('fecha_inicio', reporteForm.fecha_inicio)
+      params.append('fecha_fin', reporteForm.fecha_fin)
+      if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+
+      const { data } = await api.get(`/admin/reportes/asistencias?${params}`)
+      setReporteAsistencias(data)
+      setMessage(`✅ Reporte generado: ${data.length} registros`)
+    } catch {
+      setMessage('❌ Error al generar reporte')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function exportarExcel(tipo) {
+    try {
+      const params = new URLSearchParams()
+      params.append('fecha_inicio', reporteForm.fecha_inicio)
+      params.append('fecha_fin', reporteForm.fecha_fin)
+      if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+
+      const endpoint = tipo === 'horas-laboradas' ? '/admin/reportes/horas-laboradas/excel' :
+                       tipo === 'horas-extra' ? '/admin/reportes/horas-extra/excel' :
+                       '/admin/reportes/asistencias/excel'
+
+      const response = await api.get(`${endpoint}?${params}`, {
+        responseType: 'blob'
+      })
+
+      const url = window.URL.createObjectURL(new Blob([response.data]))
+      const link = document.createElement('a')
+      link.href = url
+      link.setAttribute('download', `reporte_${tipo}_${reporteForm.fecha_inicio}_${reporteForm.fecha_fin}.xlsx`)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+
+      setMessage('✅ Archivo Excel descargado')
+    } catch {
+      setMessage('❌ Error al exportar Excel')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function crearTurno(event) {
+    event.preventDefault()
+    try {
+      await api.post('/admin/turnos', { 
+        empleado_id: Number(turnoForm.empleado_id), 
+        dia_semana: turnoForm.dia_semana,
+        hora_entrada_oficial: turnoForm.hora_entrada,
+        hora_salida_oficial: turnoForm.hora_salida,
+        tolerancia_minutos: Number(turnoForm.tolerancia)
+      })
+      setMessage('✅ Turno creado')
+      setTurnoForm({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, es_descanso: false, es_por_asistencia: false })
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear turno')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function guardarTurno(diaSemana) {
+    const turno = turnos.find(t => t.empleado_id === Number(turnoForm.empleado_id) && t.dia_semana === diaSemana)
+    const temporal = turnosTemporales[diaSemana] || {}
+    
+    const horaEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (turno?.hora_entrada_oficial || '')
+    const horaSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (turno?.hora_salida_oficial || '')
+    const tolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (turno?.tolerancia_minutos || 15)
+    const esDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (turno?.es_descanso || false)
+    const esPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (turno?.es_por_asistencia || false)
+    
+    if (!esDescanso && !esPorAsistencia && (!horaEntrada || !horaSalida)) {
+      setMessage('⚠️ Completa entrada y salida para días laborales')
+      setTimeout(() => setMessage(''), 3000)
+      return
+    }
+    
+    try {
+      const payload = {
+        empleado_id: Number(turnoForm.empleado_id),
+        dia_semana: diaSemana,
+        hora_entrada_oficial: (esDescanso || esPorAsistencia) ? null : horaEntrada,
+        hora_salida_oficial: (esDescanso || esPorAsistencia) ? null : horaSalida,
+        tolerancia_minutos: tolerancia,
+        es_descanso: esDescanso,
+        es_por_asistencia: esPorAsistencia
+      }
+      
+      if (turno?.id) {
+        await api.put(`/admin/turnos/${turno.id}`, payload)
+        setMessage('✅ Turno actualizado')
+      } else {
+        await api.post('/admin/turnos', payload)
+        setMessage('✅ Turno guardado')
+      }
+      
+      setTurnosTemporales(prev => {
+        const nuevo = { ...prev }
+        delete nuevo[diaSemana]
+        return nuevo
+      })
+      cargar()
+    } catch (error) {
+      console.error('Error al guardar turno:', error)
+      setMessage('❌ Error al guardar turno')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarTurno(turnoId) {
+    try {
+      await api.delete(`/admin/turnos/${turnoId}`)
+      setMessage('✅ Turno eliminado')
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar turno')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function crearPlantilla() {
+    if (!plantillaForm.nombre.trim()) return
+    try {
+      await api.post('/admin/plantillas-turnos', null, { params: plantillaForm })
+      setMessage('✅ Plantilla creada')
+      setPlantillaForm({ nombre: '', descripcion: '' })
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear plantilla')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function actualizarPlantilla(id, nombre, descripcion) {
+    try {
+      await api.put(`/admin/plantillas-turnos/${id}`, null, { params: { nombre, descripcion } })
+      setMessage('✅ Plantilla actualizada')
+      cargar()
+    } catch {
+      setMessage('❌ Error al actualizar plantilla')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarPlantilla(id) {
+    if (!confirm('¿Estás seguro de eliminar esta plantilla?')) return
+    try {
+      await api.delete(`/admin/plantillas-turnos/${id}`)
+      setMessage('✅ Plantilla eliminada')
+      setDetallesPlantilla([])
+      cargar()
+    } catch {
+      setMessage('❌ Error al eliminar plantilla')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function actualizarDetallePlantilla(plantillaId, detalleId, horaEntrada, horaSalida, tolerancia, esDescanso = false, esPorAsistencia = false) {
+    try {
+      await api.put(`/admin/plantillas-turnos/${plantillaId}/detalles/${detalleId}`, {
+        hora_entrada: horaEntrada,
+        hora_salida: horaSalida,
+        tolerancia,
+        es_descanso: esDescanso,
+        es_por_asistencia: esPorAsistencia
+      })
+      setMessage('✅ Detalle actualizado')
+      await cargarDetallesPlantilla(plantillaId)
+    } catch (error) {
+      console.error('Error al actualizar detalle:', error)
+      setMessage('❌ Error al actualizar detalle')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarDetallePlantilla(plantillaId, detalleId) {
+    try {
+      await api.delete(`/admin/plantillas-turnos/${plantillaId}/detalles/${detalleId}`)
+      setMessage('✅ Detalle eliminado')
+      cargarDetallesPlantilla(plantillaId)
+    } catch {
+      setMessage('❌ Error al eliminar detalle')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function agregarDetallePlantilla(plantillaId, diaSemana, horaEntrada, horaSalida, tolerancia, esDescanso = false, esPorAsistencia = false) {
+    try {
+      await api.post(`/admin/plantillas-turnos/${plantillaId}/detalles`, {
+        dia_semana: diaSemana,
+        hora_entrada: horaEntrada,
+        hora_salida: horaSalida,
+        tolerancia,
+        es_descanso: esDescanso,
+        es_por_asistencia: esPorAsistencia
+      })
+      setMessage('✅ Detalle agregado')
+      await cargarDetallesPlantilla(plantillaId)
+    } catch (error) {
+      console.error('Error al agregar detalle:', error)
+      setMessage('❌ Error al agregar detalle')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function cargarDetallesPlantilla(plantillaId) {
+    try {
+      const { data } = await api.get(`/admin/plantillas-turnos/${plantillaId}/detalles`)
+      setDetallesPlantilla(data)
+    } catch (error) {
+      setMessage('❌ Error al cargar detalles')
+      setTimeout(() => setMessage(''), 3000)
+    }
+  }
+
+  async function asignarPlantillaEmpleado(empleadoId, plantillaId) {
+    try {
+      await api.put(`/admin/empleados/${empleadoId}/plantilla-turno/${plantillaId}`)
+      setMessage('✅ Plantilla asignada')
+      await cargar()
+    } catch {
+      setMessage('❌ Error al asignar plantilla')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function romperPlantillaEmpleado(empleadoId) {
+    if (!confirm('¿Estás seguro de romper la referencia a la plantilla y crear horario personal?')) return
+    try {
+      await api.post(`/admin/empleados/${empleadoId}/romper-plantilla`)
+      setMessage('✅ Referencia a plantilla rota, horario personal creado')
+      await cargar()
+    } catch {
+      setMessage('❌ Error al romper referencia a plantilla')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function crearDepartamento(nombre) {
+    if (!nombre.trim()) return
+    try {
+      await api.post('/admin/departamentos', null, { params: { nombre } })
+      setMessage('✅ Departamento creado')
+      cargar()
+    } catch {
+      setMessage('❌ Error al crear departamento')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function actualizarDepartamento(id, nombre) {
+    try {
+      await api.put(`/admin/departamentos/${id}`, null, { params: { nombre } })
+      setMessage('✅ Departamento actualizado')
+      cargar()
+    } catch {
+      setMessage('❌ Error al actualizar departamento')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarDepartamento(id) {
+    if (!confirm('¿Estás seguro de eliminar este departamento?')) return
+    try {
+      await api.delete(`/admin/departamentos/${id}`)
+      setMessage('✅ Departamento eliminado')
+      cargar()
+    } catch (error) {
+      setMessage('❌ Error: ' + (error.response?.data?.detail || 'No se puede eliminar departamento con colaboradores'))
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  useEffect(() => { cargar() }, [])
+
+  const empleadosFiltrados = empleados.filter(e => 
+    e.numero_empleado.toLowerCase().includes(filtro.toLowerCase()) ||
+    e.nombre_completo.toLowerCase().includes(filtro.toLowerCase()) ||
+    e.puesto.toLowerCase().includes(filtro.toLowerCase())
+  )
+
+  const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+
+  return <main style={{ minHeight: '100vh', background: '#020617', color: '#f8fafc', display: 'flex', flexDirection: 'column' }}>
+    <Navigation />
+    
+    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <aside style={{ 
+        width: menuAbierto ? '260px' : '60px', 
+        background: 'rgba(15,23,42,0.95)', 
+        borderRight: '1px solid #1e293b',
+        padding: '1rem',
+        transition: 'width 0.3s ease',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.5rem',
+        flexShrink: 0
+      }}>
+      <button 
+        onClick={() => setMenuAbierto(!menuAbierto)}
+        style={{ 
+          padding: '0.75rem', 
+          background: '#3b82f6', 
+          border: 'none', 
+          borderRadius: '0.5rem', 
+          color: '#fff', 
+          cursor: 'pointer', 
+          fontSize: '1.25rem',
+          marginBottom: '1rem'
+        }}
+      >
+        {menuAbierto ? '◀' : '▶'}
+      </button>
+      
+      {menuAbierto ? (
+        <>
+          <button className={tab === 'empleados' ? 'btn' : 'card'} onClick={() => setTab('empleados')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>👥 Colaboradores</button>
+          <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📅 Turnos y Plantillas</button>
+          <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏖️ Ausencias</button>
+          <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏢 Departamentos</button>
+          <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🔐 Usuarios</button>
+          <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📊 Reportes</button>
+        </>
+      ) : (
+        <>
+          <button className={tab === 'empleados' ? 'btn' : 'card'} onClick={() => setTab('empleados')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>👥</button>
+          <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📅</button>
+          <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏖️</button>
+          <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏢</button>
+          <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🔐</button>
+          <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📊</button>
+        </>
+      )}
+    </aside>
+
+    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', flex: 1, overflow: 'auto' }}>
+      <section style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ fontSize: '2.5rem', fontWeight: 900, margin: 0 }}>Administración Operativa</h1>
+          <p style={{ color: '#94a3b8', marginTop: '0.5rem' }}>Gestión de colaboradores, turnos y departamentos</p>
+        </div>
+        <button className="btn" onClick={cargar} style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}>🔄 Actualizar</button>
+      </section>
+
+      {message && <section className="panel" style={{ background: message.includes('✅') ? 'rgba(5,150,105,0.1)' : 'rgba(220,38,38,0.1)', border: `2px solid ${message.includes('✅') ? '#059669' : '#dc2626'}`, padding: '1rem' }}>
+        <p style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0 }}>{message}</p>
+      </section>}
+
+      {tab === 'empleados' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <form onSubmit={editandoEmpleado ? actualizarEmpleado : crearEmpleado} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+          <input className="input" placeholder="Número colaborador" value={form.numero_empleado} onChange={(e) => setForm({ ...form, numero_empleado: e.target.value })} required />
+          <input className="input" placeholder="Nombre completo" value={form.nombre_completo} onChange={(e) => setForm({ ...form, nombre_completo: e.target.value })} required />
+          <select className="input" value={form.departamento_id} onChange={(e) => setForm({ ...form, departamento_id: e.target.value })} required>
+            <option value="">Seleccionar departamento</option>
+            {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+          </select>
+          <input className="input" placeholder="Puesto" value={form.puesto} onChange={(e) => setForm({ ...form, puesto: e.target.value })} required />
+          <button className="btn">{editandoEmpleado ? '💾 Actualizar colaborador' : '➕ Crear colaborador'}</button>
+          {editandoEmpleado && <button onClick={cancelarEdicion} style={{ padding: '0.75rem 1.5rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>❌ Cancelar</button>}
+        </form>
+
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <input className="input" placeholder="🔍 Buscar por número, nombre o puesto..." value={filtro} onChange={(e) => setFiltro(e.target.value)} style={{ flex: 1 }} />
+        </div>
+
+        <section style={{ display: 'grid', gap: '0.75rem' }}>
+          {empleadosFiltrados.length === 0 ? <p style={{ color: '#94a3b8', textAlign: 'center', padding: '2rem' }}>No se encontraron colaboradores</p> : empleadosFiltrados.map((e) => <section key={e.id} className="panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.125rem', fontWeight: 900, margin: 0 }}>{e.numero_empleado} - {e.nombre_completo}</h3>
+              <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>{e.puesto} • Depto: {departamentos.find(d => d.id === e.departamento_id)?.nombre || 'Sin departamento'}</p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: e.estado_actual === 'Adentro' ? 'rgba(5,150,105,0.1)' : e.estado_actual === 'Fuera' ? 'rgba(100,116,139,0.1)' : 'rgba(234,179,8,0.1)', padding: '0.5rem 1rem', borderRadius: '0.75rem' }}>
+                <span style={{ fontSize: '1.25rem' }}>{e.estado_actual === 'Adentro' ? '✅' : e.estado_actual === 'Fuera' ? '🚪' : '⏳'}</span>
+                <span style={{ fontWeight: 700, color: e.estado_actual === 'Adentro' ? '#059669' : e.estado_actual === 'Fuera' ? '#64748b' : '#eab308' }}>{e.estado_actual}</span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.25rem' }}>
+                <button onClick={() => iniciarEdicionEmpleado(e)} style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✏️ Editar</button>
+                <button onClick={() => toggleActivoEmpleado(e.id, e.activo)} style={{ padding: '0.5rem 1rem', background: e.activo ? '#eab308' : '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>{e.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
+                <button onClick={() => eliminarEmpleado(e.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️ Eliminar</button>
+              </div>
+            </div>
+          </section>)}
+        </section>
+      </section>}
+
+      {tab === 'turnos' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className={subTabTurnos === 'turnos-individuales' ? 'btn' : 'card'} onClick={() => setSubTabTurnos('turnos-individuales')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>📅 Turnos Individuales</button>
+          <button className={subTabTurnos === 'plantillas' ? 'btn' : 'card'} onClick={() => setSubTabTurnos('plantillas')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>📋 Plantillas</button>
+        </div>
+
+        {subTabTurnos === 'turnos-individuales' && <div className="panel" style={{ padding: '1rem' }}>
+          <input
+            className="input"
+            placeholder="🔍 Buscar colaborador por número o nombre..."
+            value={filtroTurnos}
+            onChange={(e) => setFiltroTurnos(e.target.value)}
+            style={{ marginBottom: '1rem' }}
+          />
+
+          {!turnoForm.empleado_id ? (
+            <div style={{ display: 'grid', gap: '0.75rem' }}>
+              {empleados.filter(e =>
+                String(e.numero_empleado).toLowerCase().includes(filtroTurnos.toLowerCase()) ||
+                e.nombre_completo.toLowerCase().includes(filtroTurnos.toLowerCase())
+              ).map(e => {
+                const plantillaAsignada = e.plantilla_turno_id ? plantillas.find(p => p.id === e.plantilla_turno_id) : null
+                return (
+                <div
+                  key={e.id}
+                  onClick={() => setTurnoForm({ ...turnoForm, empleado_id: String(e.id) })}
+                  style={{
+                    padding: '1rem',
+                    background: 'rgba(30,41,59,0.5)',
+                    borderRadius: '0.5rem',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    border: '1px solid transparent'
+                  }}
+                  onMouseEnter={(el) => {
+                    el.target.style.background = 'rgba(59, 130, 246, 0.2)'
+                    el.target.style.borderColor = '#3b82f6'
+                  }}
+                  onMouseLeave={(el) => {
+                    el.target.style.background = 'rgba(30,41,59,0.5)'
+                    el.target.style.borderColor = 'transparent'
+                  }}
+                >
+                  <h3 style={{ fontSize: '1.125rem', fontWeight: 900, margin: 0 }}>{e.numero_empleado} - {e.nombre_completo}</h3>
+                  <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>{e.puesto} • Depto: {departamentos.find(d => d.id === e.departamento_id)?.nombre || 'Sin departamento'}</p>
+                  <p style={{ color: '#64748b', fontSize: '0.75rem', margin: '0.25rem 0 0' }}>📋 Plantilla: {plantillaAsignada ? plantillaAsignada.nombre : 'Personalizada'}</p>
+                </div>
+                )
+              })}
+            </div>
+          ) : (() => {
+            const empleado = empleados.find(e => e.id === Number(turnoForm.empleado_id))
+            const plantillaAsignada = empleado?.plantilla_turno_id ? plantillas.find(p => p.id === empleado.plantilla_turno_id) : null
+            
+            if (plantillaAsignada && (detallesPlantilla.length === 0 || detallesPlantilla[0]?.plantilla_id !== plantillaAsignada.id)) {
+              cargarDetallesPlantilla(plantillaAsignada.id)
+            }
+            
+            return (
+              <div>
+                <button
+                  onClick={() => {
+                    setTurnoForm({ ...turnoForm, empleado_id: '' })
+                    setTurnosTemporales({})
+                  }}
+                  style={{ padding: '0.5rem 1rem', background: '#64748b', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginBottom: '1rem' }}
+                >
+                  ← Volver a lista de empleados
+                </button>
+                <div style={{ marginBottom: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
+                  <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Plantilla de Turno</h4>
+                  {plantillaAsignada ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
+                      <button 
+                        onClick={() => romperPlantillaEmpleado(Number(turnoForm.empleado_id))}
+                        style={{ padding: '0.5rem 1rem', background: '#eab308', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                      >
+                        Romper referencia (crear horario personal)
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <select 
+                        className="input" 
+                        style={{ flex: 1 }}
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            asignarPlantillaEmpleado(Number(turnoForm.empleado_id), Number(e.target.value))
+                            e.target.value = ''
+                          }
+                        }}
+                      >
+                        <option value="">Seleccionar plantilla...</option>
+                        {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  {plantillaAsignada ? (
+                    <>
+                      <p style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '1rem' }}>
+                        Este colaborador usa la plantilla "{plantillaAsignada.nombre}". Los horarios se muestran en modo solo lectura.
+                      </p>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                        <thead>
+                          <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tolerancia</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                            <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Por Asistencia</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detallesPlantilla.map(detalle => (
+                            <tr key={detalle.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '0.75rem' }}>{diasSemana[detalle.dia_semana]}</td>
+                              <td style={{ padding: '0.75rem' }}>{detalle.hora_entrada_oficial || '-'}</td>
+                              <td style={{ padding: '0.75rem' }}>{detalle.hora_salida_oficial || '-'}</td>
+                              <td style={{ padding: '0.75rem' }}>{detalle.tolerancia_minutos} min</td>
+                              <td style={{ padding: '0.75rem' }}>{detalle.es_descanso ? '🏖️ Descanso' : '💼 Laboral'}</td>
+                              <td style={{ padding: '0.75rem' }}>{detalle.es_por_asistencia ? '✅ Sí' : '❌ No'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                      <thead>
+                        <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tolerancia</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Por Asistencia</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {diasSemana.map((dia, idx) => {
+                          const turno = turnos.find(t => t.empleado_id === Number(turnoForm.empleado_id) && t.dia_semana === idx)
+                          const temporal = turnosTemporales[idx] || {}
+                          const valorEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (turno?.hora_entrada_oficial || '')
+                          const valorSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (turno?.hora_salida_oficial || '')
+                          const valorTolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (turno?.tolerancia_minutos || 15)
+                          const valorDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (turno?.es_descanso || false)
+                          const valorPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (turno?.es_por_asistencia || false)
+                          return (
+                            <tr key={idx} style={{ borderBottom: '1px solid #1e293b' }}>
+                              <td style={{ padding: '0.75rem' }}>{dia}</td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <input
+                                  type="time"
+                                  className="input"
+                                  value={valorEntrada}
+                                  onChange={(e) => {
+                                    setTurnosTemporales({
+                                      ...turnosTemporales,
+                                      [idx]: { ...turnosTemporales[idx], hora_entrada: e.target.value }
+                                    })
+                                  }}
+                                  disabled={valorDescanso}
+                                  style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                                />
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <input
+                                  type="time"
+                                  className="input"
+                                  value={valorSalida}
+                                  onChange={(e) => {
+                                    setTurnosTemporales({
+                                      ...turnosTemporales,
+                                      [idx]: { ...turnosTemporales[idx], hora_salida: e.target.value }
+                                    })
+                                  }}
+                                  disabled={valorDescanso}
+                                  style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                                />
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <input
+                                  type="number"
+                                  className="input"
+                                  value={valorTolerancia}
+                                  onChange={(e) => {
+                                    setTurnosTemporales({
+                                      ...turnosTemporales,
+                                      [idx]: { ...turnosTemporales[idx], tolerancia: Number(e.target.value) }
+                                    })
+                                  }}
+                                  style={{ width: '60px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                                />
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={valorDescanso}
+                                    onChange={(e) => {
+                                      setTurnosTemporales({
+                                        ...turnosTemporales,
+                                        [idx]: { ...turnosTemporales[idx], es_descanso: e.target.checked }
+                                      })
+                                    }}
+                                  />
+                                  Descanso
+                                </label>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={valorPorAsistencia}
+                                    onChange={(e) => {
+                                      setTurnosTemporales({
+                                        ...turnosTemporales,
+                                        [idx]: { ...turnosTemporales[idx], es_por_asistencia: e.target.checked }
+                                      })
+                                    }}
+                                  />
+                                  Por Asistencia
+                                </label>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <button
+                                  onClick={() => guardarTurno(idx)}
+                                  style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                                >
+                                  💾 Guardar
+                                </button>
+                                {turno?.id && (
+                                  <button
+                                    onClick={() => eliminarTurno(turno.id)}
+                                    style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginLeft: '0.5rem' }}
+                                  >
+                                    🗑️
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
+        </div>}
+
+        {subTabTurnos === 'plantillas' && <div className="panel" style={{ padding: '1rem' }}>
+          <div style={{ marginBottom: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Crear Nueva Plantilla</h3>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <input
+                className="input"
+                placeholder="Nombre de la plantilla"
+                value={plantillaForm.nombre}
+                onChange={(e) => setPlantillaForm({ ...plantillaForm, nombre: e.target.value })}
+                style={{ flex: 1 }}
+              />
+              <input
+                className="input"
+                placeholder="Descripción (opcional)"
+                value={plantillaForm.descripcion}
+                onChange={(e) => setPlantillaForm({ ...plantillaForm, descripcion: e.target.value })}
+                style={{ flex: 1 }}
+              />
+              <button className="btn" onClick={crearPlantilla}>➕ Crear</button>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Plantillas Existentes</h3>
+            {plantillas.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay plantillas creadas</p> : (
+              <div style={{ display: 'grid', gap: '0.75rem' }}>
+                {plantillas.map(p => (
+                  <div key={p.id} style={{ padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h4 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>{p.nombre}</h4>
+                      <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>{p.descripcion || 'Sin descripción'}</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.25rem' }}>
+                      <button
+                        onClick={() => {
+                          setPlantillaSeleccionada(p.id)
+                          cargarDetallesPlantilla(p.id)
+                        }}
+                        style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                      >
+                        👁️ Ver Detalles
+                      </button>
+                      <button
+                        onClick={() => eliminarPlantilla(p.id)}
+                        style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {plantillaSeleccionada && (
+            <div style={{ padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>Detalles de Plantilla</h3>
+                <button
+                  onClick={() => {
+                    setPlantillaSeleccionada('')
+                    setDetallesPlantilla([])
+                  }}
+                  style={{ padding: '0.5rem 1rem', background: '#64748b', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                >
+                  ✕ Cerrar
+                </button>
+              </div>
+
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                <thead>
+                  <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tolerancia</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Descanso</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Por Asistencia</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {diasSemana.map((dia, idx) => {
+                    const detalle = detallesPlantilla.find(d => d.dia_semana === idx)
+                    const temporal = detallesTemporales[idx] || {}
+                    const valorEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (detalle?.hora_entrada_oficial || '')
+                    const valorSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (detalle?.hora_salida_oficial || '')
+                    const valorTolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (detalle?.tolerancia_minutos || 15)
+                    const valorDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (detalle?.es_descanso || false)
+                    const valorPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (detalle?.es_por_asistencia || false)
+                    return (
+                      <tr key={idx} style={{ borderBottom: '1px solid #1e293b' }}>
+                        <td style={{ padding: '0.75rem' }}>{dia}</td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <input
+                            type="time"
+                            className="input"
+                            value={valorEntrada}
+                            onChange={(e) => {
+                              setDetallesTemporales({
+                                ...detallesTemporales,
+                                [idx]: { ...detallesTemporales[idx], hora_entrada: e.target.value }
+                              })
+                            }}
+                            disabled={valorDescanso || valorPorAsistencia}
+                            style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <input
+                            type="time"
+                            className="input"
+                            value={valorSalida}
+                            onChange={(e) => {
+                              setDetallesTemporales({
+                                ...detallesTemporales,
+                                [idx]: { ...detallesTemporales[idx], hora_salida: e.target.value }
+                              })
+                            }}
+                            disabled={valorDescanso || valorPorAsistencia}
+                            style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <input
+                            type="number"
+                            className="input"
+                            value={valorTolerancia}
+                            onChange={(e) => {
+                              setDetallesTemporales({
+                                ...detallesTemporales,
+                                [idx]: { ...detallesTemporales[idx], tolerancia: Number(e.target.value) }
+                              })
+                            }}
+                            disabled={valorPorAsistencia}
+                            style={{ width: '60px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <input
+                              type="checkbox"
+                              checked={valorDescanso}
+                              onChange={(e) => {
+                                setDetallesTemporales({
+                                  ...detallesTemporales,
+                                  [idx]: { ...detallesTemporales[idx], es_descanso: e.target.checked }
+                                })
+                              }}
+                              disabled={valorPorAsistencia}
+                            />
+                            Descanso
+                          </label>
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <input
+                              type="checkbox"
+                              checked={valorPorAsistencia}
+                              onChange={(e) => {
+                                setDetallesTemporales({
+                                  ...detallesTemporales,
+                                  [idx]: {
+                                    ...detallesTemporales[idx],
+                                    es_por_asistencia: e.target.checked,
+                                    hora_entrada: e.target.checked ? '' : detallesTemporales[idx]?.hora_entrada,
+                                    hora_salida: e.target.checked ? '' : detallesTemporales[idx]?.hora_salida
+                                  }
+                                })
+                              }}
+                              disabled={valorDescanso}
+                            />
+                            Por Asistencia
+                          </label>
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          {detalle ? (
+                            <>
+                              <button
+                                onClick={() => {
+                                  actualizarDetallePlantilla(plantillaSeleccionada, detalle.id, valorEntrada, valorSalida, valorTolerancia, valorDescanso, valorPorAsistencia)
+                                  setDetallesTemporales(prev => {
+                                    const nuevo = { ...prev }
+                                    delete nuevo[idx]
+                                    return nuevo
+                                  })
+                                }}
+                                style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                              >
+                                💾
+                              </button>
+                              <button
+                                onClick={() => eliminarDetallePlantilla(plantillaSeleccionada, detalle.id)}
+                                style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginLeft: '0.5rem' }}
+                              >
+                                🗑️
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                agregarDetallePlantilla(plantillaSeleccionada, idx, valorEntrada, valorSalida, valorTolerancia, valorDescanso, valorPorAsistencia)
+                                setDetallesTemporales(prev => {
+                                  const nuevo = { ...prev }
+                                  delete nuevo[idx]
+                                  return nuevo
+                                })
+                              }}
+                              style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                            >
+                              ➕
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>}
+      </section>}
+
+      {tab === 'ausencias' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <form onSubmit={crearAusencia} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+          <select className="input" value={ausenciaForm.empleado_id} onChange={(e) => setAusenciaForm({ ...ausenciaForm, empleado_id: e.target.value })} required>
+            <option value="">Seleccionar colaborador</option>
+            {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+          </select>
+          <select className="input" value={ausenciaForm.tipo_ausencia} onChange={(e) => setAusenciaForm({ ...ausenciaForm, tipo_ausencia: e.target.value })} required>
+            <option value="Vacaciones">Vacaciones</option>
+            <option value="Incapacidad">Incapacidad</option>
+            <option value="Permiso">Permiso</option>
+          </select>
+          <input className="input" type="date" value={ausenciaForm.fecha_inicio} onChange={(e) => setAusenciaForm({ ...ausenciaForm, fecha_inicio: e.target.value })} required />
+          <input className="input" type="date" value={ausenciaForm.fecha_fin} onChange={(e) => setAusenciaForm({ ...ausenciaForm, fecha_fin: e.target.value })} required />
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f8fafc' }}>
+            <input type="checkbox" checked={ausenciaForm.pagada} onChange={(e) => setAusenciaForm({ ...ausenciaForm, pagada: e.target.checked })} />
+            Pagada
+          </label>
+          <input className="input" placeholder="Motivo (opcional)" value={ausenciaForm.motivo} onChange={(e) => setAusenciaForm({ ...ausenciaForm, motivo: e.target.value })} />
+          <button className="btn">➕ Crear Ausencia</button>
+        </form>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Ausencias Registradas</h3>
+          {ausencias.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay ausencias registradas</p> : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tipo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Inicio</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fin</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Pagada</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Motivo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ausencias.map(a => {
+                  const emp = empleados.find(e => e.id === a.empleado_id)
+                  return (
+                    <tr key={a.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.tipo_ausencia}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.fecha_inicio}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.fecha_fin}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.pagada ? '✅ Sí' : '❌ No'}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.motivo || '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{a.aprobado_rrhh ? '✅ Aprobado' : '⏳ Pendiente'}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', gap: '0.25rem' }}>
+                          {!a.aprobado_rrhh && <button onClick={() => aprobarAusencia(a.id)} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Aprobar</button>}
+                          <button onClick={() => eliminarAusencia(a.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>}
+
+      {tab === 'departamentos' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Crear Nuevo Departamento</h3>
+          <div style={{ display: 'flex', gap: '0.75rem' }}>
+            <input 
+              className="input" 
+              placeholder="Nombre del departamento" 
+              style={{ flex: 1 }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  crearDepartamento(e.target.value)
+                  e.target.value = ''
+                }
+              }}
+            />
+            <button className="btn" onClick={(e) => {
+              const input = e.target.previousElementSibling
+              crearDepartamento(input.value)
+              input.value = ''
+            }}>➕ Crear</button>
+          </div>
+        </div>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Departamentos</h3>
+          {departamentos.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay departamentos creados</p> : (
+            <div style={{ display: 'grid', gap: '0.75rem' }}>
+              {departamentos.map(d => (
+                <div key={d.id} style={{ padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <input
+                    className="input"
+                    value={d.nombre}
+                    style={{ flex: 1, background: 'transparent', border: 'none', color: '#f8fafc', fontSize: '1rem' }}
+                    onChange={(e) => actualizarDepartamento(d.id, e.target.value)}
+                  />
+                  <button
+                    onClick={() => eliminarDepartamento(d.id)}
+                    style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginLeft: '0.5rem' }}
+                  >
+                    🗑️
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>}
+
+      {tab === 'usuarios' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <form onSubmit={editandoUsuario ? actualizarUsuario : crearUsuario} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+          <input className="input" placeholder="Usuario" value={usuarioForm.username} onChange={(e) => setUsuarioForm({ ...usuarioForm, username: e.target.value })} required />
+          <input className="input" type="password" placeholder="Contraseña" value={usuarioForm.password} onChange={(e) => setUsuarioForm({ ...usuarioForm, password: e.target.value })} required={!editandoUsuario} />
+          <select className="input" value={usuarioForm.rol_id} onChange={(e) => setUsuarioForm({ ...usuarioForm, rol_id: e.target.value })} required>
+            <option value="">Seleccionar rol</option>
+            {roles.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+          </select>
+          <select className="input" value={usuarioForm.empleado_id} onChange={(e) => setUsuarioForm({ ...usuarioForm, empleado_id: e.target.value })}>
+            <option value="">Sin empleado asociado</option>
+            {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+          </select>
+          <button className="btn" type="submit">{editandoUsuario ? 'Actualizar' : 'Crear'} Usuario</button>
+          {editandoUsuario && <button className="btn" type="button" onClick={cancelarEdicionUsuario} style={{ background: '#64748b' }}>Cancelar</button>}
+        </form>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Usuarios del Sistema</h3>
+          {usuariosSistema.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay usuarios creados</p> : (
+            <div style={{ display: 'grid', gap: '0.75rem' }}>
+              {usuariosSistema.map(u => (
+                <div key={u.id} style={{ padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h4 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>{u.username}</h4>
+                    <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>
+                      Rol: {u.rol} {u.empleado_nombre ? `• Empleado: ${u.empleado_nombre}` : ''} • {u.activo ? '✅ Activo' : '🔒 Inactivo'}
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    <button onClick={() => iniciarEdicionUsuario(u)} style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✏️ Editar</button>
+                    <button onClick={() => toggleActivoUsuario(u.id, u.activo)} style={{ padding: '0.5rem 1rem', background: u.activo ? '#eab308' : '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>{u.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
+                    <button onClick={() => eliminarUsuario(u.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️ Eliminar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Asignar Supervisor a Departamento</h3>
+          <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+            <select className="input" style={{ flex: 1 }} id="supervisor-select">
+              <option value="">Seleccionar supervisor</option>
+              {usuariosSistema.filter(u => u.rol === 'Supervisor').map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+            </select>
+            <select className="input" style={{ flex: 1 }} id="departamento-select">
+              <option value="">Seleccionar departamento</option>
+              {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+            </select>
+            <button className="btn" onClick={() => {
+              const supervisorId = document.getElementById('supervisor-select').value
+              const departamentoId = document.getElementById('departamento-select').value
+              if (supervisorId && departamentoId) {
+                asignarSupervisorDepartamento(Number(supervisorId), Number(departamentoId))
+                document.getElementById('supervisor-select').value = ''
+                document.getElementById('departamento-select').value = ''
+              }
+            }}>Asignar</button>
+          </div>
+          <h4 style={{ fontSize: '1rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Relaciones Actuales</h4>
+          {supervisoresDepartamentos.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay relaciones asignadas</p> : (
+            <div style={{ display: 'grid', gap: '0.5rem' }}>
+              {supervisoresDepartamentos.map(r => (
+                <div key={r.id} style={{ padding: '0.75rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.875rem' }}>{r.usuario_nombre} → {r.departamento_nombre}</span>
+                  <button onClick={() => eliminarSupervisorDepartamento(r.id)} style={{ padding: '0.25rem 0.5rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.75rem' }}>Eliminar</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>}
+
+      {tab === 'reportes' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className={subTabReportes === 'horas-laboradas' ? 'btn' : 'card'} onClick={() => setSubTabReportes('horas-laboradas')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>⏱️ Horas Laboradas</button>
+          <button className={subTabReportes === 'horas-extra' ? 'btn' : 'card'} onClick={() => setSubTabReportes('horas-extra')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>⚡ Horas Extra</button>
+          <button className={subTabReportes === 'salidas-temporales' ? 'btn' : 'card'} onClick={() => setSubTabReportes('salidas-temporales')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>🚪 Salidas Temporales</button>
+          <button className={subTabReportes === 'asistencias' ? 'btn' : 'card'} onClick={() => setSubTabReportes('asistencias')} style={{ flex: 1, padding: '0.75rem', fontSize: '1rem' }}>✅ Asistencias</button>
+        </div>
+
+        {subTabReportes === 'horas-laboradas' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+          <form onSubmit={generarReporteHorasLaboradas} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <input className="input" type="date" value={reporteForm.fecha_inicio} onChange={(e) => setReporteForm({ ...reporteForm, fecha_inicio: e.target.value })} required />
+            <input className="input" type="date" value={reporteForm.fecha_fin} onChange={(e) => setReporteForm({ ...reporteForm, fecha_fin: e.target.value })} required />
+            <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <button className="btn">📊 Generar Reporte</button>
+            <button 
+              type="button" 
+              onClick={() => exportarExcel('horas-laboradas')}
+              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+            >
+              📥 Exportar Excel
+            </button>
+          </form>
+
+          {reporteHoras.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteHoras.length} registros</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Laboradas</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reporteHoras.map((r, i) => {
+                  const emp = empleados.find(e => e.id === r.empleado_id)
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? emp.nombre_completo : r.empleado_id}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.hora_entrada ? new Date(r.hora_entrada).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.hora_salida ? new Date(r.hora_salida).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                      <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_laboradas}h</td>
+                      <td style={{ padding: '0.75rem' }}>{r.estado}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>}
+        </section>}
+
+        {subTabReportes === 'horas-extra' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+          <form onSubmit={generarReporteHorasExtra} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <input className="input" type="date" value={reporteForm.fecha_inicio} onChange={(e) => setReporteForm({ ...reporteForm, fecha_inicio: e.target.value })} required />
+            <input className="input" type="date" value={reporteForm.fecha_fin} onChange={(e) => setReporteForm({ ...reporteForm, fecha_fin: e.target.value })} required />
+            <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <button className="btn">📊 Generar Reporte</button>
+            <button 
+              type="button" 
+              onClick={() => exportarExcel('horas-extra')}
+              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+            >
+              📥 Exportar Excel
+            </button>
+          </form>
+
+          {reporteHorasExtra.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteHorasExtra.length} registros</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos Extra</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado Supervisor</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado RRHH</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reporteHorasExtra.map((r, i) => {
+                  const emp = empleados.find(e => e.id === r.empleado_id)
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? emp.nombre_completo : r.empleado_id}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.minutos_extra} min</td>
+                      <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_extra}h</td>
+                      <td style={{ padding: '0.75rem' }}>{r.validado_supervisor ? '✅' : '❌'}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        {r.validado_rrhh ? '✅' : (
+                          <button
+                            onClick={() => aprobarHoraExtra(r.id)}
+                            style={{ padding: '0.5rem 1rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+                          >
+                            Aprobar
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>}
+        </section>}
+
+        {subTabReportes === 'salidas-temporales' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+          <form onSubmit={generarReporteSalidasTemporales} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <input className="input" type="date" value={reporteForm.fecha_inicio} onChange={(e) => setReporteForm({ ...reporteForm, fecha_inicio: e.target.value })} required />
+            <input className="input" type="date" value={reporteForm.fecha_fin} onChange={(e) => setReporteForm({ ...reporteForm, fecha_fin: e.target.value })} required />
+            <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <button className="btn">📊 Generar Reporte</button>
+          </form>
+
+          {reporteSalidasTemporales.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteSalidasTemporales.length} registros</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tipo Salida</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Salida</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Regreso</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Duración (min)</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos Descontados</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reporteSalidasTemporales.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                    <td style={{ padding: '0.75rem' }}>{r.nombre_empleado} #{r.numero_empleado}</td>
+                    <td style={{ padding: '0.75rem' }}>{r.tipo_salida}</td>
+                    <td style={{ padding: '0.75rem' }}>{r.fecha_turno}</td>
+                    <td style={{ padding: '0.75rem' }}>{r.hora_salida ? new Date(r.hora_salida).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                    <td style={{ padding: '0.75rem' }}>{r.hora_regreso ? new Date(r.hora_regreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                    <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.duracion_minutos ? r.duracion_minutos + ' min' : '-'}</td>
+                    <td style={{ padding: '0.75rem' }}>{r.minutos_descontados} min</td>
+                    <td style={{ padding: '0.75rem' }}>{r.estado_salida}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>}
+        </section>}
+
+        {subTabReportes === 'asistencias' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+          <form onSubmit={generarReporteAsistencias} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <input className="input" type="date" value={reporteForm.fecha_inicio} onChange={(e) => setReporteForm({ ...reporteForm, fecha_inicio: e.target.value })} required />
+            <input className="input" type="date" value={reporteForm.fecha_fin} onChange={(e) => setReporteForm({ ...reporteForm, fecha_fin: e.target.value })} required />
+            <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <button className="btn">📊 Generar Reporte</button>
+            <button 
+              type="button" 
+              onClick={() => exportarExcel('asistencias')}
+              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+            >
+              📥 Exportar Excel
+            </button>
+          </form>
+
+          {reporteAsistencias.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteAsistencias.length} registros</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reporteAsistencias.map((r, i) => {
+                  const emp = empleados.find(e => e.id === r.empleado_id)
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? emp.nombre_completo : r.empleado_id}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.hora_entrada ? new Date(r.hora_entrada).toLocaleTimeString() : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.hora_salida ? new Date(r.hora_salida).toLocaleTimeString() : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.estado_registro || '-'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>}
+        </section>}
+      </section>}
+    </div>
+    </div>
+  </main>
+}

@@ -1,0 +1,232 @@
+from datetime import datetime, time, date
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from app.models import EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoSalida, RolNombre, TipoAusencia, TipoSalida, TipoVisitante
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    rol: RolNombre
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class DepartamentoBase(BaseModel):
+    nombre: str
+
+
+class DepartamentoOut(DepartamentoBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+
+
+class EmpleadoCreate(BaseModel):
+    numero_empleado: str
+    nombre_completo: str
+    departamento_id: int
+    puesto: str
+    activo: bool = True
+
+
+class EmpleadoUpdate(BaseModel):
+    nombre_completo: str | None = None
+    departamento_id: int | None = None
+    puesto: str | None = None
+    activo: bool | None = None
+    estado_actual: EstadoEmpleado | None = None
+
+
+class EmpleadoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    numero_empleado: str
+    nombre_completo: str
+    departamento_id: int
+    puesto: str
+    estado_actual: EstadoEmpleado
+    activo: bool
+    plantilla_turno_id: int | None = None
+
+
+class PlantillaTurnoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    nombre: str
+    descripcion: str | None = None
+
+
+class DetallePlantillaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    plantilla_id: int
+    dia_semana: int
+    hora_entrada_oficial: time | None = None
+    hora_salida_oficial: time | None = None
+    tolerancia_minutos: int
+    es_descanso: bool
+    es_por_asistencia: bool
+
+    @field_serializer('hora_entrada_oficial', 'hora_salida_oficial')
+    def serialize_time(self, value: time | None):
+        return value.strftime("%H:%M") if value else None
+
+
+class DetallePlantillaCreate(BaseModel):
+    dia_semana: int = Field(ge=0, le=6)
+    hora_entrada_oficial: time | None = None
+    hora_salida_oficial: time | None = None
+    tolerancia_minutos: int = 15
+    es_descanso: bool = False
+    es_por_asistencia: bool = False
+
+
+class DetallePlantillaUpdate(BaseModel):
+    dia_semana: int | None = Field(None, ge=0, le=6)
+    hora_entrada_oficial: time | None = None
+    hora_salida_oficial: time | None = None
+    tolerancia_minutos: int | None = None
+    es_descanso: bool | None = None
+    es_por_asistencia: bool | None = None
+
+
+class TurnoCreate(BaseModel):
+    empleado_id: int
+    dia_semana: int = Field(ge=0, le=6)
+    hora_entrada_oficial: time | None = None
+    hora_salida_oficial: time | None = None
+    tolerancia_minutos: int = 15
+    es_descanso: bool = False
+    es_por_asistencia: bool = False
+
+    @field_validator('hora_entrada_oficial', 'hora_salida_oficial', mode='before')
+    @classmethod
+    def parse_time(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return time.fromisoformat(v)
+        return v
+
+
+class TurnoDescansoUpdate(BaseModel):
+    es_descanso: bool
+
+
+class TurnoUpdate(BaseModel):
+    hora_entrada_oficial: time | None = None
+    hora_salida_oficial: time | None = None
+    tolerancia_minutos: int | None = None
+    es_descanso: bool | None = None
+    es_por_asistencia: bool | None = None
+
+    @field_validator('hora_entrada_oficial', 'hora_salida_oficial', mode='before')
+    @classmethod
+    def parse_time(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return time.fromisoformat(v)
+        return v
+
+
+class TurnoOut(TurnoCreate):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+
+    @field_serializer('hora_entrada_oficial', 'hora_salida_oficial')
+    def serialize_time(self, value: time | None):
+        return value.strftime("%H:%M") if value else None
+
+
+class AsistenciaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    empleado_id: int
+    fecha_turno: datetime | str
+    hora_entrada_real: datetime | None
+    hora_salida_real: datetime | None
+    estado_registro: EstadoRegistro
+    pase_espera_expira: datetime | None
+    validacion_supervisor: bool
+    validacion_rrhh: bool
+
+
+class ScanResponse(BaseModel):
+    empleado_id: int
+    asistencia_id: int
+    estado_empleado: EstadoEmpleado
+    estado_registro: EstadoRegistro
+    mensaje: str
+    pase_espera_expira: datetime | None = None
+
+
+class EntradaRequest(BaseModel):
+    empleado_id: int
+    observaciones: list[str] = []
+
+
+class SalidaTemporalCreate(BaseModel):
+    empleado_id: int
+    tipo_salida: TipoSalida
+
+
+class RegresoSalidaTemporalRequest(BaseModel):
+    empleado_id: int
+
+
+class SalidaTemporalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    asistencia_id: int
+    tipo_salida: TipoSalida
+    hora_salida: datetime
+    hora_regreso: datetime | None
+    estado_salida: EstadoSalida
+
+
+class FilaExternoCreate(BaseModel):
+    tipo_visitante: TipoVisitante
+    nombre_empresa: str
+    chofer: str | None = None
+    placa: str | None = None
+
+
+class FilaExternoAsignar(BaseModel):
+    anden_asignado: str
+
+
+class FilaExternoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    tipo_visitante: str
+    nombre_empresa: str
+    chofer: str | None
+    placa: str | None
+    estado_fila: EstadoFila
+    anden_asignado: str | None
+    hora_llegada: datetime
+
+
+class AusenciaCreate(BaseModel):
+    empleado_id: int
+    tipo_ausencia: TipoAusencia
+    fecha_inicio: date
+    fecha_fin: date
+    pagada: bool = True
+    motivo: str | None = None
+
+
+class AusenciaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    empleado_id: int
+    tipo_ausencia: TipoAusencia
+    fecha_inicio: date
+    fecha_fin: date
+    pagada: bool
+    motivo: str | None
+    aprobado_rrhh: bool
+    fecha_registro: datetime
