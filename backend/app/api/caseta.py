@@ -161,11 +161,13 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
     empleado = asistencia.empleado
 
     # Obtener horario oficial del empleado
-    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    # Usar la fecha de la asistencia o la fecha actual si fecha_turno es None
+    fecha_turno = asistencia.fecha_turno if asistencia.fecha_turno else now.date()
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
     hora_salida_oficial = None
     if turno and turno["hora_salida_oficial"]:
         hora_salida_oficial = datetime.combine(
-            asistencia.fecha_turno,
+            fecha_turno,
             turno["hora_salida_oficial"],
             tzinfo=now.tzinfo
         )
@@ -273,11 +275,13 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Salida temporal cerrada automáticamente después de 5 horas. Colaborador marcado como FUERA. Debe escanear nuevamente para ingresar.")
 
     # Obtener horario oficial del empleado
-    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    # Usar la fecha de la asistencia o la fecha actual si fecha_turno es None
+    fecha_turno = asistencia.fecha_turno if asistencia.fecha_turno else now.date()
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
     hora_salida_oficial = None
     if turno and turno["hora_salida_oficial"]:
         hora_salida_oficial = datetime.combine(
-            asistencia.fecha_turno,
+            fecha_turno,
             turno["hora_salida_oficial"],
             tzinfo=now.tzinfo
         )

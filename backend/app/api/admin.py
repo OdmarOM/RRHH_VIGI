@@ -671,7 +671,8 @@ def reporte_horas_extra(
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
         RegistroAsistencia.fecha_turno <= fin,
-        RegistroAsistencia.minutos_extra_calculados > 0
+        RegistroAsistencia.minutos_extra_calculados > 0,
+        RegistroAsistencia.autorizacion_horas_extra_rrhh == True
     )
     
     if empleado_id:
@@ -859,7 +860,8 @@ def exportar_horas_extra_excel(
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
         RegistroAsistencia.fecha_turno <= fin,
-        RegistroAsistencia.minutos_extra_calculados > 0
+        RegistroAsistencia.minutos_extra_calculados > 0,
+        RegistroAsistencia.autorizacion_horas_extra_rrhh == True
     )
 
     if empleado_id:

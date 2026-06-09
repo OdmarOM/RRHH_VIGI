@@ -21,7 +21,8 @@ def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
 
 
 def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict:
-    """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos."""
+    """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos.
+    Solo cuenta visitas pagadas y horas extra autorizadas por RRHH."""
     now = utc_now()
     
     # Obtener todos los eventos del empleado en la fecha
@@ -55,6 +56,22 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             "observaciones": evento.observaciones
         })
         
+        # Verificar si el evento está asociado a una visita no pagada
+        visita_no_pagada = False
+        if evento.asistencia:
+            visita = db.scalar(
+                select(Visita).where(
+                    Visita.asistencia_id == evento.asistencia.id,
+                    Visita.estado == EstadoVisita.NO_PAGADA
+                )
+            )
+            if visita:
+                visita_no_pagada = True
+        
+        # Si es visita no pagada, no contar las horas
+        if visita_no_pagada:
+            continue
+        
         if evento.tipo_evento == TipoEvento.ENTRADA:
             hora_entrada_actual = evento.fecha_evento
         elif evento.tipo_evento == TipoEvento.SALIDA and hora_entrada_actual:
@@ -77,16 +94,19 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             # Reanudar conteo desde el regreso
             hora_entrada_actual = evento.fecha_evento
     
-    # Calcular minutos extra basado en horario oficial
+    # Calcular minutos extra basado en horario oficial y autorización RRHH
     turno = get_empleado_turno(db, db.get(Empleado, empleado_id), fecha.weekday())
     minutos_extra = 0
     
     if turno and turno["hora_salida_oficial"]:
         hora_salida_oficial = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
         # Si hay eventos de salida después del horario oficial, calcular minutos extra
+        # Solo si están autorizados por RRHH
         for evento in eventos:
             if evento.tipo_evento == TipoEvento.SALIDA and evento.fecha_evento > hora_salida_oficial:
-                minutos_extra += int((evento.fecha_evento - hora_salida_oficial).total_seconds() / 60)
+                # Verificar si la asistencia tiene autorización de horas extra
+                if evento.asistencia and evento.asistencia.autorizacion_horas_extra_rrhh:
+                    minutos_extra += int((evento.fecha_evento - hora_salida_oficial).total_seconds() / 60)
     
     return {
         "minutos_laborados": minutos_laborados,
