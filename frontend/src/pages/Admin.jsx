@@ -12,7 +12,7 @@ export function Admin() {
   const [filtroTurnos, setFiltroTurnos] = useState('')
   const [tab, setTab] = useState('empleados')
   const [form, setForm] = useState({ numero_empleado: '', nombre_completo: '', departamento_id: '', puesto: '' })
-  const [turnoForm, setTurnoForm] = useState({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, es_descanso: false, es_por_asistencia: false })
+  const [turnoForm, setTurnoForm] = useState({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, tolerancia_entrada_previa: 15, tolerancia_salida_posterior: 15, tolerancia_salida_previa: 5, es_descanso: false, es_por_asistencia: false })
   const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '' })
   const [plantillaSeleccionada, setPlantillaSeleccionada] = useState('')
   const [detallesTemporales, setDetallesTemporales] = useState({})
@@ -28,6 +28,9 @@ export function Admin() {
   const [reporteHoras, setReporteHoras] = useState([])
   const [reporteHorasExtra, setReporteHorasExtra] = useState([])
   const [reporteAsistencias, setReporteAsistencias] = useState([])
+  const [visitas, setVisitas] = useState([])
+  const [filtroVisitas, setFiltroVisitas] = useState('')
+  const [horasExtraPendientes, setHorasExtraPendientes] = useState([])
   const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
   const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '' })
   const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
@@ -87,7 +90,49 @@ export function Admin() {
       setSupervisoresDepartamentos(supDeptData.data)
       setRoles(rolesData.data)
       setAusencias(ausData.data)
+      cargarVisitas()
+      cargarHorasExtraPendientes()
     } catch {}
+  }
+
+  async function cargarVisitas() {
+    try {
+      const { data } = await api.get('/caseta/visitas')
+      setVisitas(data)
+    } catch {}
+  }
+
+  async function cargarHorasExtraPendientes() {
+    try {
+      const { data } = await api.get('/caseta/historial')
+      const pendientes = data.filter(a => a.minutos_extra_calculados > 0 && !a.autorizacion_horas_extra_rrhh)
+      setHorasExtraPendientes(pendientes)
+    } catch {}
+  }
+
+  async function actualizarVisita(visitaId, nuevoEstado, motivo = null) {
+    try {
+      await api.put(`/caseta/visitas/${visitaId}`, { 
+        estado: nuevoEstado, 
+        motivo: motivo 
+      })
+      setMessage('✅ Visita actualizada')
+      cargarVisitas()
+    } catch {
+      setMessage('❌ Error al actualizar visita')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function autorizarHorasExtra(asistenciaId) {
+    try {
+      await api.put(`/admin/asistencias/${asistenciaId}/autorizar-horas-extra`)
+      setMessage('✅ Horas extra autorizadas')
+      cargarHorasExtraPendientes()
+    } catch {
+      setMessage('❌ Error al autorizar horas extra')
+    }
+    setTimeout(() => setMessage(''), 3000)
   }
 
   async function crearEmpleado(event) {
@@ -411,10 +456,15 @@ export function Admin() {
         dia_semana: turnoForm.dia_semana,
         hora_entrada_oficial: turnoForm.hora_entrada,
         hora_salida_oficial: turnoForm.hora_salida,
-        tolerancia_minutos: Number(turnoForm.tolerancia)
+        tolerancia_minutos: Number(turnoForm.tolerancia),
+        tolerancia_entrada_previa_minutos: Number(turnoForm.tolerancia_entrada_previa),
+        tolerancia_salida_posterior_minutos: Number(turnoForm.tolerancia_salida_posterior),
+        tolerancia_salida_previa_minutos: Number(turnoForm.tolerancia_salida_previa),
+        es_descanso: turnoForm.es_descanso,
+        es_por_asistencia: turnoForm.es_por_asistencia
       })
       setMessage('✅ Turno creado')
-      setTurnoForm({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, es_descanso: false, es_por_asistencia: false })
+      setTurnoForm({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, tolerancia_entrada_previa: 15, tolerancia_salida_posterior: 15, tolerancia_salida_previa: 5, es_descanso: false, es_por_asistencia: false })
       cargar()
     } catch {
       setMessage('❌ Error al crear turno')
@@ -429,6 +479,9 @@ export function Admin() {
     const horaEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (turno?.hora_entrada_oficial || '')
     const horaSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (turno?.hora_salida_oficial || '')
     const tolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (turno?.tolerancia_minutos || 15)
+    const toleranciaEntradaPrevia = temporal.tolerancia_entrada_previa !== undefined ? temporal.tolerancia_entrada_previa : (turno?.tolerancia_entrada_previa_minutos || 15)
+    const toleranciaSalidaPosterior = temporal.tolerancia_salida_posterior !== undefined ? temporal.tolerancia_salida_posterior : (turno?.tolerancia_salida_posterior_minutos || 15)
+    const toleranciaSalidaPrevia = temporal.tolerancia_salida_previa !== undefined ? temporal.tolerancia_salida_previa : (turno?.tolerancia_salida_previa_minutos || 5)
     const esDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (turno?.es_descanso || false)
     const esPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (turno?.es_por_asistencia || false)
     
@@ -445,6 +498,9 @@ export function Admin() {
         hora_entrada_oficial: (esDescanso || esPorAsistencia) ? null : horaEntrada,
         hora_salida_oficial: (esDescanso || esPorAsistencia) ? null : horaSalida,
         tolerancia_minutos: tolerancia,
+        tolerancia_entrada_previa_minutos: toleranciaEntradaPrevia,
+        tolerancia_salida_posterior_minutos: toleranciaSalidaPosterior,
+        tolerancia_salida_previa_minutos: toleranciaSalidaPrevia,
         es_descanso: esDescanso,
         es_por_asistencia: esPorAsistencia
       }
@@ -680,6 +736,7 @@ export function Admin() {
           <button className={tab === 'empleados' ? 'btn' : 'card'} onClick={() => setTab('empleados')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>👥 Colaboradores</button>
           <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📅 Turnos y Plantillas</button>
           <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏖️ Ausencias</button>
+          <button className={tab === 'visitas' ? 'btn' : 'card'} onClick={() => setTab('visitas')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🚪 Visitas</button>
           <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏢 Departamentos</button>
           <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🔐 Usuarios</button>
           <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📊 Reportes</button>
@@ -689,6 +746,7 @@ export function Admin() {
           <button className={tab === 'empleados' ? 'btn' : 'card'} onClick={() => setTab('empleados')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>👥</button>
           <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📅</button>
           <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏖️</button>
+          <button className={tab === 'visitas' ? 'btn' : 'card'} onClick={() => setTab('visitas')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🚪</button>
           <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏢</button>
           <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🔐</button>
           <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📊</button>
@@ -754,6 +812,16 @@ export function Admin() {
         </div>
 
         {subTabTurnos === 'turnos-individuales' && <div className="panel" style={{ padding: '1rem' }}>
+          <div style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid #3b82f6', borderRadius: '0.5rem', padding: '1rem', marginBottom: '1rem' }}>
+            <h4 style={{ margin: '0 0 0.5rem 0', color: '#3b82f6', fontSize: '0.9rem' }}>📋 Guía de Tolerancias</h4>
+            <ul style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.8rem', color: '#94a3b8' }}>
+              <li><strong>Tol. Entrada - Antes:</strong> Minutos antes del turno que se registran como visita (ej: 15 min antes = visita)</li>
+              <li><strong>Tol. Entrada - Desp:</strong> Minutos después del turno que se consideran a tiempo (ej: 15 min después = entrada a tiempo)</li>
+              <li><strong>Tol. Salida - Antes:</strong> Minutos antes de salir que se consideran a tiempo (ej: 5 min antes = salida a tiempo)</li>
+              <li><strong>Tol. Salida - Desp:</strong> Minutos después de salir que generan horas extra (ej: 15 min después = horas extra)</li>
+            </ul>
+          </div>
+          
           <input
             className="input"
             placeholder="🔍 Buscar colaborador por número o nombre..."
@@ -884,7 +952,8 @@ export function Admin() {
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
-                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tolerancia</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tol. Entrada</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tol. Salida</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Por Asistencia</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
@@ -897,6 +966,9 @@ export function Admin() {
                           const valorEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (turno?.hora_entrada_oficial || '')
                           const valorSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (turno?.hora_salida_oficial || '')
                           const valorTolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (turno?.tolerancia_minutos || 15)
+                          const valorToleranciaEntradaPrevia = temporal.tolerancia_entrada_previa !== undefined ? temporal.tolerancia_entrada_previa : (turno?.tolerancia_entrada_previa_minutos || 15)
+                          const valorToleranciaSalidaPosterior = temporal.tolerancia_salida_posterior !== undefined ? temporal.tolerancia_salida_posterior : (turno?.tolerancia_salida_posterior_minutos || 15)
+                          const valorToleranciaSalidaPrevia = temporal.tolerancia_salida_previa !== undefined ? temporal.tolerancia_salida_previa : (turno?.tolerancia_salida_previa_minutos || 5)
                           const valorDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (turno?.es_descanso || false)
                           const valorPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (turno?.es_por_asistencia || false)
                           return (
@@ -933,18 +1005,80 @@ export function Admin() {
                                 />
                               </td>
                               <td style={{ padding: '0.75rem' }}>
-                                <input
-                                  type="number"
-                                  className="input"
-                                  value={valorTolerancia}
-                                  onChange={(e) => {
-                                    setTurnosTemporales({
-                                      ...turnosTemporales,
-                                      [idx]: { ...turnosTemporales[idx], tolerancia: Number(e.target.value) }
-                                    })
-                                  }}
-                                  style={{ width: '60px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
-                                />
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Antes</span>
+                                    <input
+                                      type="number"
+                                      className="input"
+                                      placeholder="15"
+                                      value={valorToleranciaEntradaPrevia}
+                                      onChange={(e) => {
+                                        setTurnosTemporales({
+                                          ...turnosTemporales,
+                                          [idx]: { ...turnosTemporales[idx], tolerancia_entrada_previa: Number(e.target.value) }
+                                        })
+                                      }}
+                                      style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                                    />
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Desp</span>
+                                    <input
+                                      type="number"
+                                      className="input"
+                                      placeholder="15"
+                                      value={valorTolerancia}
+                                      onChange={(e) => {
+                                        setTurnosTemporales({
+                                          ...turnosTemporales,
+                                          [idx]: { ...turnosTemporales[idx], tolerancia: Number(e.target.value) }
+                                        })
+                                      }}
+                                      style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                                    />
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                                  </div>
+                                </div>
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Antes</span>
+                                    <input
+                                      type="number"
+                                      className="input"
+                                      placeholder="5"
+                                      value={valorToleranciaSalidaPrevia}
+                                      onChange={(e) => {
+                                        setTurnosTemporales({
+                                          ...turnosTemporales,
+                                          [idx]: { ...turnosTemporales[idx], tolerancia_salida_previa: Number(e.target.value) }
+                                        })
+                                      }}
+                                      style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                                    />
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Desp</span>
+                                    <input
+                                      type="number"
+                                      className="input"
+                                      placeholder="15"
+                                      value={valorToleranciaSalidaPosterior}
+                                      onChange={(e) => {
+                                        setTurnosTemporales({
+                                          ...turnosTemporales,
+                                          [idx]: { ...turnosTemporales[idx], tolerancia_salida_posterior: Number(e.target.value) }
+                                        })
+                                      }}
+                                      style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                                    />
+                                    <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                                  </div>
+                                </div>
                               </td>
                               <td style={{ padding: '0.75rem' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1293,6 +1427,94 @@ export function Admin() {
         </div>
       </section>}
 
+      {tab === 'visitas' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Autorización de Horas Extra</h3>
+          {horasExtraPendientes.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay horas extra pendientes de autorización</p> : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra (min)</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {horasExtraPendientes.map(h => {
+                  const emp = empleados.find(e => e.id === h.empleado_id)
+                  return (
+                    <tr key={h.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
+                      <td style={{ padding: '0.75rem' }}>{h.fecha_turno}</td>
+                      <td style={{ padding: '0.75rem' }}>{h.minutos_extra_calculados} min</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <button onClick={() => autorizarHorasExtra(h.id)} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Autorizar</button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Visitas (Entradas Fuera de Horario)</h3>
+          {visitas.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay visitas registradas</p> : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha Visita</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Autorizado Por</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Motivo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visitas.map(v => {
+                  const emp = empleados.find(e => e.id === v.empleado_id)
+                  return (
+                    <tr key={v.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
+                      <td style={{ padding: '0.75rem' }}>{new Date(v.fecha_visita).toLocaleString()}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <span style={{
+                          padding: '0.25rem 0.5rem',
+                          borderRadius: '0.25rem',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          background: v.estado === 'Pagada' ? 'rgba(5,150,105,0.2)' : 
+                                    v.estado === 'No_Pagada' ? 'rgba(239,68,68,0.2)' : 'rgba(234,179,8,0.2)',
+                          color: v.estado === 'Pagada' ? '#059669' : 
+                                 v.estado === 'No_Pagada' ? '#ef4444' : '#eab308'
+                        }}>
+                          {v.estado}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.75rem' }}>{v.autorizado_por ? `Usuario #${v.autorizado_por}` : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{v.motivo || '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                          {v.estado === 'Pendiente' && (
+                            <>
+                              <button onClick={() => actualizarVisita(v.id, 'Pagada', 'Visita autorizada como pagada')} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Pagada</button>
+                              <button onClick={() => actualizarVisita(v.id, 'No_Pagada', 'Visita autorizada como no pagada')} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>❌ No Pagada</button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>}
+
       {tab === 'departamentos' && <section style={{ display: 'grid', gap: '1.5rem' }}>
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Crear Nuevo Departamento</h3>
@@ -1501,7 +1723,7 @@ export function Admin() {
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos Extra</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado Supervisor</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado RRHH</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Autorizado RRHH</th>
                 </tr>
               </thead>
               <tbody>
@@ -1515,14 +1737,7 @@ export function Admin() {
                       <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_extra}h</td>
                       <td style={{ padding: '0.75rem' }}>{r.validado_supervisor ? '✅' : '❌'}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        {r.validado_rrhh ? '✅' : (
-                          <button
-                            onClick={() => aprobarHoraExtra(r.id)}
-                            style={{ padding: '0.5rem 1rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
-                          >
-                            Aprobar
-                          </button>
-                        )}
+                        {r.autorizacion_horas_extra_rrhh ? '✅ Autorizado' : '⏳ Pendiente'}
                       </td>
                     </tr>
                   )

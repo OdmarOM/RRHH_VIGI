@@ -2,7 +2,7 @@ from datetime import datetime, time, date, timedelta
 from sqlalchemy import select
 from app.core.database import Base, SessionLocal, engine
 from app.core.security import hash_password
-from app.models import Departamento, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoFila, EstadoRegistro, FilaExterno, PlantillaTurno, RegistroAsistencia, RegistroAusencia, Rol, RolNombre, SupervisorDepartamento, TipoAusencia, TipoVisitante, TurnoHorario, UsuarioSistema
+from app.models import Departamento, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoVisita, EventoAsistencia, FilaExterno, PlantillaTurno, RegistroAsistencia, RegistroAusencia, Rol, RolNombre, SupervisorDepartamento, TipoAusencia, TipoEvento, TipoVisitante, TurnoHorario, UsuarioSistema, Visita
 
 
 Base.metadata.drop_all(bind=engine)
@@ -46,8 +46,8 @@ with SessionLocal() as db:
         db.add(plantilla_matutino)
         db.flush()
 
-        # Lunes a viernes
-        for dia in range(1, 6):
+        # Lunes a viernes (0 = lunes, 4 = viernes)
+        for dia in range(0, 5):
             db.add(DetallePlantillaTurno(
                 plantilla_id=plantilla_matutino.id,
                 dia_semana=dia,
@@ -61,8 +61,8 @@ with SessionLocal() as db:
         db.add(plantilla_vespertino)
         db.flush()
 
-        # Lunes a viernes
-        for dia in range(1, 6):
+        # Lunes a viernes (0 = lunes, 4 = viernes)
+        for dia in range(0, 5):
             db.add(DetallePlantillaTurno(
                 plantilla_id=plantilla_vespertino.id,
                 dia_semana=dia,
@@ -76,15 +76,15 @@ with SessionLocal() as db:
         db.add(plantilla_mixto)
         db.flush()
 
-        # Lunes a sábado, domingo es descanso
-        for dia in range(1, 7):
+        # Lunes a sábado (0 = lunes, 5 = sábado), domingo (6) es descanso
+        for dia in range(0, 6):
             db.add(DetallePlantillaTurno(
                 plantilla_id=plantilla_mixto.id,
                 dia_semana=dia,
-                hora_entrada_oficial=time(8, 0) if dia != 6 else None,
-                hora_salida_oficial=time(16, 0) if dia != 6 else None,
+                hora_entrada_oficial=time(8, 0) if dia != 5 else None,
+                hora_salida_oficial=time(16, 0) if dia != 5 else None,
                 tolerancia_minutos=15,
-                es_descanso=(dia == 6)  # Sábado es descanso
+                es_descanso=(dia == 5)  # Sábado es descanso
             ))
     db.flush()
 
@@ -133,7 +133,7 @@ with SessionLocal() as db:
 
     # Crear turnos individuales para un empleado sin plantilla
     if len(empleados) >= 4:
-        for dia in range(1, 6):
+        for dia in range(0, 5):
             db.add(TurnoHorario(
                 empleado_id=empleados[3].id,
                 dia_semana=dia,
@@ -145,7 +145,7 @@ with SessionLocal() as db:
     
     # Crear turnos por asistencia para un empleado
     if len(empleados) >= 5:
-        for dia in range(1, 6):
+        for dia in range(0, 5):
             db.add(TurnoHorario(
                 empleado_id=empleados[4].id,
                 dia_semana=dia,

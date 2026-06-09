@@ -116,6 +116,9 @@ class TurnoHorario(Base):
     hora_entrada_oficial: Mapped[time | None] = mapped_column(Time, nullable=True)
     hora_salida_oficial: Mapped[time | None] = mapped_column(Time, nullable=True)
     tolerancia_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_entrada_previa_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_salida_posterior_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_salida_previa_minutos: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     es_descanso: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     es_por_asistencia: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -138,6 +141,9 @@ class DetallePlantillaTurno(Base):
     hora_entrada_oficial: Mapped[time | None] = mapped_column(Time, nullable=True)
     hora_salida_oficial: Mapped[time | None] = mapped_column(Time, nullable=True)
     tolerancia_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_entrada_previa_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_salida_posterior_minutos: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+    tolerancia_salida_previa_minutos: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     es_descanso: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     es_por_asistencia: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -157,6 +163,7 @@ class RegistroAsistencia(Base):
     minutos_extra_calculados: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     validacion_supervisor: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     validacion_rrhh: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    autorizacion_horas_extra_rrhh: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     omision_salida_detectada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     hora_cierre_automatico: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -170,6 +177,51 @@ class ObservacionCaseta(Base):
     asistencia_id: Mapped[int] = mapped_column(ForeignKey("registro_asistencias.id"), nullable=False)
     tipo_observacion: Mapped[str] = mapped_column(String(120), nullable=False)
     fecha_registro: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TipoEvento(StrEnum):
+    ENTRADA = "Entrada"
+    SALIDA = "Salida"
+    SALIDA_TEMPORAL = "Salida_Temporal"
+    REGRESO_SALIDA_TEMPORAL = "Regreso_Salida_Temporal"
+
+
+class EventoAsistencia(Base):
+    __tablename__ = "eventos_asistencia"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id"), nullable=False, index=True)
+    asistencia_id: Mapped[int | None] = mapped_column(ForeignKey("registro_asistencias.id"), nullable=True)
+    tipo_evento: Mapped[TipoEvento] = mapped_column(Enum(TipoEvento), nullable=False)
+    fecha_evento: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observaciones: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    tipo_salida: Mapped[str | None] = mapped_column(String(80), nullable=True)  # Para salidas temporales
+
+    empleado: Mapped[Empleado] = relationship()
+    asistencia: Mapped["RegistroAsistencia"] = relationship()
+
+
+class EstadoVisita(StrEnum):
+    PENDIENTE = "Pendiente"
+    PAGADA = "Pagada"
+    NO_PAGADA = "No_Pagada"
+
+
+class Visita(Base):
+    __tablename__ = "visitas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id"), nullable=False, index=True)
+    asistencia_id: Mapped[int] = mapped_column(ForeignKey("registro_asistencias.id"), nullable=False)
+    fecha_visita: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    estado: Mapped[EstadoVisita] = mapped_column(Enum(EstadoVisita), nullable=False, default=EstadoVisita.PENDIENTE)
+    autorizado_por: Mapped[int | None] = mapped_column(ForeignKey("usuarios_sistema.id"), nullable=True)
+    fecha_autorizacion: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    motivo: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    empleado: Mapped[Empleado] = relationship()
+    asistencia: Mapped["RegistroAsistencia"] = relationship()
+    autorizado_por_usuario: Mapped["UsuarioSistema"] = relationship(foreign_keys=[autorizado_por])
 
 
 class TipoAusencia(StrEnum):

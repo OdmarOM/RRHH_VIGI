@@ -213,7 +213,7 @@ export function ZebraCaseta() {
         <div>
           <h3 style={{ fontSize: '1.5rem', fontWeight: 900, margin: 0, color: estadoColor }}>{empleadoEscaneado.nombre_completo}</h3>
           <p style={{ fontSize: '1.125rem', margin: '0.25rem 0 0' }}>#{empleadoEscaneado.numero_empleado} • {empleadoEscaneado.puesto}</p>
-          <p style={{ fontSize: '1rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>Estado: {empleadoEscaneado.estado_empleado} • {empleadoEscaneado.estado_registro}</p>
+          <p style={{ fontSize: '1rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>Estado: {empleadoEscaneado.estado_empleado} • {empleadoEscaneado.estado_registro === 'VISITA_DESCANSO' ? 'Visita' : empleadoEscaneado.estado_registro}</p>
           {empleadoEscaneado.horario && (
             <p style={{ fontSize: '1rem', margin: '0.25rem 0 0', color: empleadoEscaneado.fuera_horario ? '#dc2626' : '#059669', fontWeight: 700 }}>
               🕐 Hora entrada oficial: {empleadoEscaneado.horario.hora_entrada_oficial} (tolerancia: {empleadoEscaneado.horario.tolerancia_minutos} min)

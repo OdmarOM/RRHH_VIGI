@@ -3,7 +3,7 @@ import { api } from '../api'
 import { Navigation } from '../components/Navigation'
 
 export function Historial() {
-  const [historial, setHistorial] = useState([])
+  const [eventos, setEventos] = useState([])
   const [historialExternos, setHistorialExternos] = useState([])
   const [empleados, setEmpleados] = useState([])
   const [fechaInicio, setFechaInicio] = useState('')
@@ -14,7 +14,6 @@ export function Historial() {
 
   useEffect(() => {
     cargarEmpleados()
-    cargarHistorial()
     cargarHistorialExternos()
   }, [])
 
@@ -25,15 +24,18 @@ export function Historial() {
     } catch {}
   }
 
-  async function cargarHistorial() {
+  async function cargarEventos() {
+    if (!empleadoId) {
+      setEventos([])
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams()
       if (fechaInicio) params.append('fecha_inicio', fechaInicio)
       if (fechaFin) params.append('fecha_fin', fechaFin)
-      if (empleadoId) params.append('empleado_id', empleadoId)
-      const { data } = await api.get(`/caseta/historial?${params.toString()}`)
-      setHistorial(data)
+      const { data } = await api.get(`/caseta/eventos/${empleadoId}?${params.toString()}`)
+      setEventos(data)
     } catch {}
     setLoading(false)
   }
@@ -49,18 +51,19 @@ export function Historial() {
   }
 
   function aplicarFiltros() {
-    cargarHistorial()
+    cargarEventos()
   }
 
   function limpiarFiltros() {
     setFechaInicio('')
     setFechaFin('')
     setEmpleadoId('')
-    setTimeout(() => {
-      cargarHistorial()
-      cargarHistorialExternos()
-    }, 0)
+    setEventos([])
   }
+
+  useEffect(() => {
+    cargarEventos()
+  }, [empleadoId])
 
   return <main style={{ minHeight: '100vh', background: '#020617', color: '#f8fafc' }}>
     <Navigation />
@@ -124,13 +127,14 @@ export function Historial() {
             />
           </div>
           {tab === 'colaboradores' && <div>
-            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Colaborador (opcional)</label>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Colaborador *</label>
             <select 
               className="input" 
               value={empleadoId} 
               onChange={(e) => setEmpleadoId(e.target.value)}
+              required
             >
-              <option value="">Todos los colaboradores</option>
+              <option value="">Seleccionar colaborador...</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
           </div>}
@@ -147,29 +151,25 @@ export function Historial() {
 
       <section className="panel" style={{ padding: '1.5rem', display: 'grid', gap: '1rem' }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>
-          Resultados ({tab === 'colaboradores' ? historial.length : historialExternos.length})
+          Resultados ({tab === 'colaboradores' ? eventos.length : historialExternos.length})
         </h2>
         
-        {tab === 'colaboradores' && !loading && historial.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.75rem' }}>
+        {tab === 'colaboradores' && !loading && eventos.length > 0 && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.75rem' }}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#3b82f6' }}>{historial.length}</div>
-            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Total Registros</div>
+            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#3b82f6' }}>{eventos.length}</div>
+            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Total Eventos</div>
           </div>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#059669' }}>{historial.filter(h => h.estado_registro === 'Normal').length}</div>
-            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Asistencias Normales</div>
+            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#059669' }}>{eventos.filter(e => e.tipo_evento === 'Entrada').length}</div>
+            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Entradas</div>
           </div>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#eab308' }}>{historial.filter(h => h.estado_registro === 'Incidencia').length}</div>
-            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Incidencias</div>
+            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#ef4444' }}>{eventos.filter(e => e.tipo_evento === 'Salida').length}</div>
+            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Salidas</div>
           </div>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#f97316' }}>{historial.reduce((sum, h) => sum + (h.minutos_extra_calculados || 0), 0)}</div>
-            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Minutos Extras Totales</div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#ef4444' }}>{(historial.reduce((sum, h) => sum + (h.minutos_extra_calculados || 0), 0) / 60).toFixed(1)}</div>
-            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Horas Extras Totales</div>
+            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#eab308' }}>{eventos.filter(e => e.tipo_evento === 'Salida_Temporal').length}</div>
+            <div style={{ fontSize: '0.875rem', color: '#94a3b8' }}>Salidas Temporales</div>
           </div>
         </div>}
 
@@ -189,11 +189,12 @@ export function Historial() {
         </div>}
 
         {loading ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Cargando...</p> : 
-        tab === 'colaboradores' && historial.length === 0 ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Sin registros de colaboradores</p> :
+        tab === 'colaboradores' && !empleadoId ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Selecciona un colaborador para ver su historial de eventos</p> :
+        tab === 'colaboradores' && eventos.length === 0 ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Sin eventos para este colaborador</p> :
         tab === 'externos' && historialExternos.length === 0 ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Sin registros de externos</p> :
         <div style={{ display: 'grid', gap: '0.75rem' }}>
-          {tab === 'colaboradores' && historial.map((h) => (
-            <div key={h.id} style={{ 
+          {tab === 'colaboradores' && eventos.map((e) => (
+            <div key={e.id} style={{ 
               padding: '1.25rem', 
               borderRadius: '0.75rem', 
               background: 'linear-gradient(135deg, #1e293b, #0f172a)', 
@@ -203,8 +204,18 @@ export function Historial() {
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                 <div>
-                  <h3 style={{ fontSize: '1.125rem', fontWeight: 900, margin: 0 }}>{h.nombre_empleado}</h3>
-                  <p style={{ fontSize: '0.875rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>#{h.numero_empleado} • {h.puesto} • {h.departamento}</p>
+                  <h3 style={{ fontSize: '1.125rem', fontWeight: 900, margin: 0 }}>{e.tipo_evento.replace('_', ' ')}</h3>
+                  <p style={{ fontSize: '0.875rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>{e.observaciones || ''}</p>
+                  {e.observaciones && e.observaciones.includes('retardo') && <span style={{ 
+                    padding: '0.25rem 0.5rem', 
+                    borderRadius: '0.25rem', 
+                    fontSize: '0.75rem', 
+                    fontWeight: 700,
+                    background: 'rgba(239,68,68,0.2)',
+                    color: '#ef4444'
+                  }}>
+                    ⚠️ A destiempo
+                  </span>}
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <span style={{ 
@@ -212,25 +223,19 @@ export function Historial() {
                     borderRadius: '0.5rem', 
                     fontSize: '0.75rem', 
                     fontWeight: 700,
-                    background: h.estado_registro === 'Normal' ? 'rgba(5,150,105,0.2)' : h.estado_registro === 'Incidencia' ? 'rgba(234,179,8,0.2)' : 'rgba(100,116,139,0.2)',
-                    color: h.estado_registro === 'Normal' ? '#059669' : h.estado_registro === 'Incidencia' ? '#eab308' : '#94a3b8'
+                    background: e.tipo_evento === 'Entrada' ? 'rgba(5,150,105,0.2)' : e.tipo_evento === 'Salida' ? 'rgba(239,68,68,0.2)' : 'rgba(234,179,8,0.2)',
+                    color: e.tipo_evento === 'Entrada' ? '#059669' : e.tipo_evento === 'Salida' ? '#ef4444' : '#eab308'
                   }}>
-                    {h.estado_registro}
+                    {e.tipo_evento}
                   </span>
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem', fontSize: '0.875rem' }}>
                 <div>
-                  <span style={{ color: '#64748b' }}>📅 Fecha:</span> {h.fecha_turno}
+                  <span style={{ color: '#64748b' }}>🕐 Fecha:</span> {new Date(e.fecha_evento).toLocaleString()}
                 </div>
-                <div>
-                  <span style={{ color: '#64748b' }}>🕐 Entrada:</span> {h.hora_entrada_real ? new Date(h.hora_entrada_real).toLocaleTimeString() : '-'}
-                </div>
-                <div>
-                  <span style={{ color: '#64748b' }}>🕕 Salida:</span> {h.hora_salida_real ? new Date(h.hora_salida_real).toLocaleTimeString() : '-'}
-                </div>
-                {h.minutos_extra_calculados > 0 && <div>
-                  <span style={{ color: '#64748b' }}>⏱️ Extra:</span> {h.minutos_extra_calculados} min
+                {e.tipo_salida && <div>
+                  <span style={{ color: '#64748b' }}>📋 Tipo Salida:</span> {e.tipo_salida}
                 </div>}
               </div>
             </div>

@@ -1,9 +1,100 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.time import utc_now
-from app.models import DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TurnoHorario, UsuarioSistema
+from app.models import DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TurnoHorario, UsuarioSistema, Visita
+
+
+def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
+    """Crea una visita para una entrada fuera de horario."""
+    visita = Visita(
+        empleado_id=empleado_id,
+        asistencia_id=asistencia_id,
+        fecha_visita=utc_now(),
+        estado=EstadoVisita.PENDIENTE
+    )
+    db.add(visita)
+    db.commit()
+    db.refresh(visita)
+    return visita
+
+
+def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict:
+    """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos."""
+    now = utc_now()
+    
+    # Obtener todos los eventos del empleado en la fecha
+    eventos = db.scalars(
+        select(EventoAsistencia)
+        .where(EventoAsistencia.empleado_id == empleado_id)
+        .where(EventoAsistencia.fecha_evento >= datetime.combine(fecha, datetime.min.time()))
+        .where(EventoAsistencia.fecha_evento <= datetime.combine(fecha, datetime.max.time()))
+        .order_by(EventoAsistencia.fecha_evento)
+    ).all()
+    
+    if not eventos:
+        return {
+            "minutos_laborados": 0,
+            "minutos_extra": 0,
+            "minutos_descanso": 0,
+            "total_eventos": 0,
+            "eventos": []
+        }
+    
+    minutos_laborados = 0
+    minutos_descanso = 0
+    hora_entrada_actual = None
+    hora_salida_temporal = None
+    eventos_detalle = []
+    
+    for evento in eventos:
+        eventos_detalle.append({
+            "tipo": evento.tipo_evento.value,
+            "fecha": evento.fecha_evento.isoformat(),
+            "observaciones": evento.observaciones
+        })
+        
+        if evento.tipo_evento == TipoEvento.ENTRADA:
+            hora_entrada_actual = evento.fecha_evento
+        elif evento.tipo_evento == TipoEvento.SALIDA and hora_entrada_actual:
+            # Calcular minutos entre entrada y salida
+            minutos = int((evento.fecha_evento - hora_entrada_actual).total_seconds() / 60)
+            minutos_laborados += minutos
+            hora_entrada_actual = None
+        elif evento.tipo_evento == TipoEvento.SALIDA_TEMPORAL and hora_entrada_actual:
+            # Guardar la hora de salida temporal para calcular tiempo de descanso
+            hora_salida_temporal = evento.fecha_evento
+            # Sumar minutos laborados hasta la salida temporal
+            minutos = int((evento.fecha_evento - hora_entrada_actual).total_seconds() / 60)
+            minutos_laborados += minutos
+            hora_entrada_actual = None
+        elif evento.tipo_evento == TipoEvento.REGRESO_SALIDA_TEMPORAL:
+            # Calcular minutos de descanso durante la salida temporal
+            if hora_salida_temporal:
+                minutos_descanso = int((evento.fecha_evento - hora_salida_temporal).total_seconds() / 60)
+                hora_salida_temporal = None
+            # Reanudar conteo desde el regreso
+            hora_entrada_actual = evento.fecha_evento
+    
+    # Calcular minutos extra basado en horario oficial
+    turno = get_empleado_turno(db, db.get(Empleado, empleado_id), fecha.weekday())
+    minutos_extra = 0
+    
+    if turno and turno["hora_salida_oficial"]:
+        hora_salida_oficial = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+        # Si hay eventos de salida después del horario oficial, calcular minutos extra
+        for evento in eventos:
+            if evento.tipo_evento == TipoEvento.SALIDA and evento.fecha_evento > hora_salida_oficial:
+                minutos_extra += int((evento.fecha_evento - hora_salida_oficial).total_seconds() / 60)
+    
+    return {
+        "minutos_laborados": minutos_laborados,
+        "minutos_extra": minutos_extra,
+        "minutos_descanso": minutos_descanso,
+        "total_eventos": len(eventos),
+        "eventos": eventos_detalle
+    }
 
 
 def get_or_create_today_asistencia(db: Session, empleado: Empleado) -> RegistroAsistencia:
@@ -44,6 +135,9 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
             "hora_entrada_oficial": turno_individual.hora_entrada_oficial,
             "hora_salida_oficial": turno_individual.hora_salida_oficial,
             "tolerancia_minutos": turno_individual.tolerancia_minutos,
+            "tolerancia_entrada_previa_minutos": turno_individual.tolerancia_entrada_previa_minutos,
+            "tolerancia_salida_posterior_minutos": turno_individual.tolerancia_salida_posterior_minutos,
+            "tolerancia_salida_previa_minutos": turno_individual.tolerancia_salida_previa_minutos,
             "es_descanso": turno_individual.es_descanso
         }
     
@@ -64,6 +158,9 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
                     "hora_entrada_oficial": detalle.hora_entrada_oficial,
                     "hora_salida_oficial": detalle.hora_salida_oficial,
                     "tolerancia_minutos": detalle.tolerancia_minutos,
+                    "tolerancia_entrada_previa_minutos": detalle.tolerancia_entrada_previa_minutos,
+                    "tolerancia_salida_posterior_minutos": detalle.tolerancia_salida_posterior_minutos,
+                    "tolerancia_salida_previa_minutos": detalle.tolerancia_salida_previa_minutos,
                     "es_descanso": detalle.es_descanso
                 }
             else:
@@ -162,6 +259,14 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             # Si ya tiene validación, permitir la entrada (hora ya fue registrada al llegar tarde)
             empleado.estado_actual = EstadoEmpleado.LABORANDO
             asistencia.estado_registro = EstadoRegistro.RETARDO_APROBADO
+            # Registrar evento de entrada
+            db.add(EventoAsistencia(
+                empleado_id=empleado.id,
+                asistencia_id=asistencia.id,
+                tipo_evento=TipoEvento.ENTRADA,
+                fecha_evento=now,
+                observaciones="Entrada con pase digital aprobado"
+            ))
             db.commit()
             db.refresh(asistencia)
             return asistencia
@@ -175,6 +280,16 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
         asistencia.hora_entrada_real = now
         asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
         empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Visita en día de descanso"
+        ))
+        # Crear visita automáticamente
+        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -186,21 +301,100 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
     if es_turno_nocturno:
         asistencia.fecha_entrada_turno = now.date()
 
-    limite = datetime.combine(now.date(), turno["hora_entrada_oficial"], tzinfo=now.tzinfo) + timedelta(minutes=turno["tolerancia_minutos"])
-    if now > limite and not asistencia.validacion_supervisor:
-        # Registrar hora de entrada real (para contar horas laboradas desde este momento)
+    hora_entrada_oficial = datetime.combine(now.date(), turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+    tolerancia_entrada_previa = turno.get("tolerancia_entrada_previa_minutos", 15)
+    tolerancia_entrada_posterior = turno.get("tolerancia_minutos", 15)
+    
+    # Calcular límites de tolerancia
+    limite_entrada_previa = hora_entrada_oficial - timedelta(minutes=tolerancia_entrada_previa)
+    limite_entrada_posterior = hora_entrada_oficial + timedelta(minutes=tolerancia_entrada_posterior)
+    
+    # Caso 1: Llegó antes del inicio de turno (dentro de tolerancia previa) -> Registrar como visita
+    if now < hora_entrada_oficial and now >= limite_entrada_previa:
+        asistencia.hora_entrada_real = now
+        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada como visita
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Visita antes de turno (dentro de tolerancia)"
+        ))
+        # Crear visita automáticamente
+        crear_visita(db, empleado.id, asistencia.id)
+        db.commit()
+        db.refresh(asistencia)
+        return asistencia
+    
+    # Caso 2: Llegó después del inicio de turno (dentro de tolerancia posterior) -> Considerar como entrada a tiempo
+    if now > hora_entrada_oficial and now <= limite_entrada_posterior:
+        asistencia.hora_entrada_real = hora_entrada_oficial  # Registrar como si hubiera llegado a tiempo
+        asistencia.estado_registro = EstadoRegistro.NORMAL
+        empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada normal
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Entrada dentro de tolerancia posterior"
+        ))
+        db.commit()
+        db.refresh(asistencia)
+        return asistencia
+    
+    # Caso 3: Llegó muy tarde (fuera de tolerancia posterior) -> Requiere aprobación
+    if now > limite_entrada_posterior and not asistencia.validacion_supervisor:
         asistencia.hora_entrada_real = now
         asistencia.pase_espera_expira = now + timedelta(minutes=30)
         asistencia.estado_registro = EstadoRegistro.INCIDENCIA
         empleado.estado_actual = EstadoEmpleado.EN_ESPERA_PASE
+        # Registrar evento de entrada con retardo
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Entrada con retardo (fuera de tolerancia)"
+        ))
         db.add(ObservacionCaseta(asistencia_id=asistencia.id, tipo_observacion="Retardo requiere pase digital", fecha_registro=now))
         db.commit()
         db.refresh(asistencia)
         return asistencia
 
+    # Caso 4: Llegó muy temprano (fuera de tolerancia previa) -> Registrar como visita en día de descanso
+    if now < limite_entrada_previa:
+        asistencia.hora_entrada_real = now
+        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Visita muy temprana (fuera de tolerancia)"
+        ))
+        # Crear visita automáticamente
+        crear_visita(db, empleado.id, asistencia.id)
+        db.commit()
+        db.refresh(asistencia)
+        return asistencia
+
+    # Caso 5: Entrada exacta o dentro de tiempo normal
     asistencia.hora_entrada_real = now
     asistencia.estado_registro = EstadoRegistro.NORMAL
     empleado.estado_actual = EstadoEmpleado.LABORANDO
+    # Registrar evento de entrada normal
+    db.add(EventoAsistencia(
+        empleado_id=empleado.id,
+        asistencia_id=asistencia.id,
+        tipo_evento=TipoEvento.ENTRADA,
+        fecha_evento=now,
+        observaciones="Entrada normal"
+    ))
     db.commit()
     db.refresh(asistencia)
     return asistencia

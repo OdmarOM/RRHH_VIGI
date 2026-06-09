@@ -496,6 +496,21 @@ def romper_plantilla_empleado(empleado_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@router.put("/asistencias/{asistencia_id}/autorizar-horas-extra", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR, RolNombre.RRHH))])
+def autorizar_horas_extra(asistencia_id: int, db: Session = Depends(get_db)):
+    """Autoriza las horas extra de un registro de asistencia (solo RRHH)"""
+    asistencia = db.get(RegistroAsistencia, asistencia_id)
+    if not asistencia:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de asistencia no encontrado")
+    
+    if asistencia.minutos_extra_calculados == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No hay horas extra calculadas para autorizar")
+    
+    asistencia.autorizacion_horas_extra_rrhh = True
+    db.commit()
+    return {"ok": True, "minutos_extra": asistencia.minutos_extra_calculados}
+
+
 # CRUD de departamentos
 @router.post("/departamentos", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
 def crear_departamento(nombre: str, db: Session = Depends(get_db)):

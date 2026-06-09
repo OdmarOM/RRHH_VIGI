@@ -1,6 +1,6 @@
 from datetime import datetime, time, date
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
-from app.models import EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoSalida, RolNombre, TipoAusencia, TipoSalida, TipoVisitante
+from app.models import EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoSalida, EstadoVisita, RolNombre, TipoAusencia, TipoSalida, TipoEvento, TipoVisitante
 
 
 class Token(BaseModel):
@@ -230,3 +230,31 @@ class AusenciaOut(BaseModel):
     motivo: str | None
     aprobado_rrhh: bool
     fecha_registro: datetime
+
+
+class EventoAsistenciaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    empleado_id: int
+    asistencia_id: int | None
+    tipo_evento: TipoEvento
+    fecha_evento: datetime
+    observaciones: str | None
+    tipo_salida: str | None
+
+
+class VisitaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    empleado_id: int
+    asistencia_id: int
+    fecha_visita: datetime
+    estado: EstadoVisita
+    autorizado_por: int | None
+    fecha_autorizacion: datetime | None
+    motivo: str | None
+
+
+class VisitaUpdate(BaseModel):
+    estado: EstadoVisita
+    motivo: str | None = None

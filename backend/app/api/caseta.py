@@ -4,9 +4,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_token
 from app.core.time import utc_now
-from app.models import Empleado, EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoSalida, FilaExterno, ObservacionCaseta, RegistroAsistencia, RegistroAusencia, SalidaTemporal, TipoSalida, TurnoHorario, UsuarioSistema
-from app.schemas import EntradaRequest, FilaExternoAsignar, FilaExternoCreate, FilaExternoOut, RegresoSalidaTemporalRequest, SalidaTemporalCreate, SalidaTemporalOut, ScanResponse
-from app.services import get_employee_info, get_or_create_today_asistencia, scan_employee
+from app.models import Empleado, EstadoEmpleado, EstadoFila, EstadoRegistro, EstadoSalida, EstadoVisita, EventoAsistencia, FilaExterno, ObservacionCaseta, RegistroAsistencia, RegistroAusencia, SalidaTemporal, TipoEvento, TipoSalida, TurnoHorario, UsuarioSistema, Visita
+from app.schemas import EntradaRequest, EventoAsistenciaOut, FilaExternoAsignar, FilaExternoCreate, FilaExternoOut, RegresoSalidaTemporalRequest, SalidaTemporalCreate, SalidaTemporalOut, ScanResponse, VisitaOut, VisitaUpdate
+from app.services import calcular_horas_laboradas, crear_visita, get_employee_info, get_or_create_today_asistencia, scan_employee
 from datetime import datetime
 
 
@@ -128,6 +128,18 @@ def salida_temporal(payload: SalidaTemporalCreate, db: Session = Depends(get_db)
     )
     empleado.estado_actual = EstadoEmpleado.SALIDA_TEMPORAL
     db.add(salida)
+    db.flush()
+    
+    # Registrar evento de salida temporal
+    db.add(EventoAsistencia(
+        empleado_id=empleado.id,
+        asistencia_id=asistencia.id,
+        tipo_evento=TipoEvento.SALIDA_TEMPORAL,
+        fecha_evento=salida.hora_salida,
+        observaciones=f"Salida temporal: {payload.tipo_salida.value}",
+        tipo_salida=payload.tipo_salida.value
+    ))
+    
     db.commit()
     db.refresh(salida)
     return salida
@@ -290,7 +302,17 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
             estado_registro=EstadoRegistro.VISITA_DESCANSO
         )
         db.add(nueva_visita)
+        db.flush()
         empleado.estado_actual = EstadoEmpleado.LABORANDO
+
+        # Registrar evento de regreso después de fin de turno
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=nueva_visita.id,
+            tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
+            fecha_evento=now,
+            observaciones="Regreso después de fin de turno"
+        ))
 
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
@@ -302,6 +324,15 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         salida.hora_regreso = now
         salida.estado_salida = EstadoSalida.CERRADA
         empleado.estado_actual = EstadoEmpleado.LABORANDO
+        
+        # Registrar evento de regreso de salida temporal
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
+            fecha_evento=now,
+            observaciones="Regreso de salida temporal"
+        ))
 
     db.commit()
     db.refresh(salida)
@@ -311,6 +342,8 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
 @router.post("/salida-final/{empleado_id}")
 def salida_final(empleado_id: int, db: Session = Depends(get_db)):
     import logging
+    from app.services import get_empleado_turno
+    from datetime import timedelta
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info(f"DEBUG - salida_final llamado con empleado_id: {empleado_id}")
@@ -325,7 +358,6 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
     now = utc_now()
 
     # Buscar la asistencia más reciente del colaborador para el día actual
-    # Si no hay asistencia sin salida, buscar la más reciente del día y permitir actualizarla
     asistencia = db.scalar(
         select(RegistroAsistencia)
         .where(RegistroAsistencia.empleado_id == empleado_id)
@@ -341,13 +373,66 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asistencia del día no encontrada")
 
     asistencia.hora_salida_real = now
-    turno = db.scalar(select(TurnoHorario).where(TurnoHorario.empleado_id == empleado_id, TurnoHorario.dia_semana == now.weekday()))
-    if turno:
-        limite = datetime.combine(now.date(), turno.hora_salida_oficial, tzinfo=now.tzinfo)
-        if now > limite:
-            minutos_extra = int((now - limite).total_seconds() / 60)
+    
+    # Obtener turno del empleado para calcular tolerancias
+    turno = get_empleado_turno(db, empleado, now.weekday())
+    
+    if turno and turno["hora_salida_oficial"]:
+        hora_salida_oficial = datetime.combine(now.date(), turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+        tolerancia_salida_previa = turno.get("tolerancia_salida_previa_minutos", 5)
+        tolerancia_salida_posterior = turno.get("tolerancia_salida_posterior_minutos", 15)
+        
+        # Calcular límites de tolerancia
+        limite_salida_previa = hora_salida_oficial - timedelta(minutes=tolerancia_salida_previa)
+        limite_salida_posterior = hora_salida_oficial + timedelta(minutes=tolerancia_salida_posterior)
+        
+        # Caso 1: Salida dentro de tolerancia previa (5 min antes) -> Considerar como salida a tiempo
+        if now >= limite_salida_previa and now <= hora_salida_oficial:
+            asistencia.hora_salida_real = hora_salida_oficial  # Registrar como si hubiera salido a tiempo
+            asistencia.minutos_extra_calculados = 0
+            logger.info(f"DEBUG - Salida dentro de tolerancia previa, registrada como salida a tiempo")
+        
+        # Caso 2: Salida dentro de tolerancia posterior (15 min después) -> Considerar como salida a tiempo
+        elif now > hora_salida_oficial and now <= limite_salida_posterior:
+            asistencia.hora_salida_real = hora_salida_oficial  # Registrar como si hubiera salido a tiempo
+            asistencia.minutos_extra_calculados = 0
+            logger.info(f"DEBUG - Salida dentro de tolerancia posterior, registrada como salida a tiempo")
+        
+        # Caso 3: Salida después de tolerancia posterior -> Calcular horas extra y registrar como visita
+        elif now > limite_salida_posterior:
+            minutos_extra = int((now - hora_salida_oficial).total_seconds() / 60)
             asistencia.minutos_extra_calculados = minutos_extra
+            logger.info(f"DEBUG - Salida después de tolerancia posterior, minutos extra: {minutos_extra}")
+            
+            # Crear visita para las horas extra
+            crear_visita(db, empleado.id, asistencia.id)
+            
+            db.add(ObservacionCaseta(
+                asistencia_id=asistencia.id,
+                tipo_observacion=f"Salida después de tolerancia posterior. {minutos_extra} minutos extra registrados como visita para autorización RRHH.",
+                fecha_registro=now
+            ))
+        
+        # Caso 4: Salida muy temprano (antes de tolerancia previa) -> Registrar como salida temprana
+        elif now < limite_salida_previa:
+            asistencia.minutos_extra_calculados = 0
+            logger.info(f"DEBUG - Salida muy temprana (antes de tolerancia previa)")
+            
+            db.add(ObservacionCaseta(
+                asistencia_id=asistencia.id,
+                tipo_observacion="Salida temprana (antes de tolerancia previa)",
+                fecha_registro=now
+            ))
+    
     empleado.estado_actual = EstadoEmpleado.FUERA
+    # Registrar evento de salida
+    db.add(EventoAsistencia(
+        empleado_id=empleado_id,
+        asistencia_id=asistencia.id,
+        tipo_evento=TipoEvento.SALIDA,
+        fecha_evento=now,
+        observaciones="Salida final"
+    ))
     db.commit()
     return {"ok": True}
 
@@ -432,6 +517,45 @@ def entrada_directa_externo(id: int, db: Session = Depends(get_db)):
     return externo
 
 
+@router.get("/eventos/{empleado_id}", response_model=list[EventoAsistenciaOut])
+def obtener_eventos_empleado(empleado_id: int, fecha_inicio: str | None = None, fecha_fin: str | None = None, db: Session = Depends(get_db)):
+    """Obtiene los eventos de asistencia de un empleado en un rango de fechas"""
+    from datetime import date
+    
+    query = select(EventoAsistencia).where(EventoAsistencia.empleado_id == empleado_id)
+    
+    if fecha_inicio:
+        try:
+            fecha_inicio_dt = date.fromisoformat(fecha_inicio)
+            query = query.where(EventoAsistencia.fecha_evento >= datetime.combine(fecha_inicio_dt, datetime.min.time()))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha_inicio inválido (debe ser YYYY-MM-DD)")
+    
+    if fecha_fin:
+        try:
+            fecha_fin_dt = date.fromisoformat(fecha_fin)
+            query = query.where(EventoAsistencia.fecha_evento <= datetime.combine(fecha_fin_dt, datetime.max.time()))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha_fin inválido (debe ser YYYY-MM-DD)")
+    
+    eventos = db.scalars(query.order_by(EventoAsistencia.fecha_evento.desc())).all()
+    return eventos
+
+
+@router.get("/horas-laboradas/{empleado_id}")
+def calcular_horas_por_fecha(empleado_id: int, fecha: str, db: Session = Depends(get_db)):
+    """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos"""
+    from datetime import date
+    
+    try:
+        fecha_dt = date.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha inválido (debe ser YYYY-MM-DD)")
+    
+    resultado = calcular_horas_laboradas(db, empleado_id, fecha_dt)
+    return resultado
+
+
 @router.get("/historial")
 def historial_accesos(fecha_inicio: str | None = None, fecha_fin: str | None = None, empleado_id: int | None = None, db: Session = Depends(get_db)):
     from datetime import date
@@ -472,7 +596,8 @@ def historial_accesos(fecha_inicio: str | None = None, fecha_fin: str | None = N
             "estado_empleado": a.empleado.estado_actual,
             "minutos_extra_calculados": a.minutos_extra_calculados,
             "validacion_supervisor": a.validacion_supervisor,
-            "validacion_rrhh": a.validacion_rrhh
+            "validacion_rrhh": a.validacion_rrhh,
+            "autorizacion_horas_extra_rrhh": a.autorizacion_horas_extra_rrhh
         }
         for a in asistencias
     ]
@@ -632,3 +757,46 @@ def procesar_salidas_temporales_expiradas(db: Session = Depends(get_db)):
         "procesadas": len(procesadas),
         "salidas": procesadas
     }
+
+
+@router.get("/visitas", response_model=list[VisitaOut])
+def obtener_visitas(fecha_inicio: str | None = None, fecha_fin: str | None = None, db: Session = Depends(get_db)):
+    """Obtiene todas las visitas en un rango de fechas"""
+    from datetime import date
+    
+    query = select(Visita)
+    
+    if fecha_inicio:
+        try:
+            fecha_inicio_dt = date.fromisoformat(fecha_inicio)
+            query = query.where(Visita.fecha_visita >= datetime.combine(fecha_inicio_dt, datetime.min.time()))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha_inicio inválido")
+    
+    if fecha_fin:
+        try:
+            fecha_fin_dt = date.fromisoformat(fecha_fin)
+            query = query.where(Visita.fecha_visita <= datetime.combine(fecha_fin_dt, datetime.max.time()))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha_fin inválido")
+    
+    visitas = db.scalars(query.order_by(Visita.fecha_visita.desc())).all()
+    return visitas
+
+
+@router.put("/visitas/{visita_id}", response_model=VisitaOut)
+def actualizar_visita(visita_id: int, request: VisitaUpdate, db: Session = Depends(get_db)):
+    """Actualiza el estado de una visita (solo RRHH)"""
+    visita = db.get(Visita, visita_id)
+    if not visita:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visita no encontrada")
+    
+    visita.estado = request.estado
+    visita.motivo = request.motivo
+    
+    if request.estado in [EstadoVisita.PAGADA, EstadoVisita.NO_PAGADA]:
+        visita.fecha_autorizacion = utc_now()
+    
+    db.commit()
+    db.refresh(visita)
+    return visita
