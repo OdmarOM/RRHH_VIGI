@@ -378,55 +378,31 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
 
     asistencia.hora_salida_real = now
     
-    # Obtener turno del empleado para calcular tolerancias
+    # Calcular bloques de horas extra si hay turno definido
     turno = get_empleado_turno(db, empleado, now.weekday())
     
-    if turno and turno["hora_salida_oficial"]:
-        hora_salida_oficial = datetime.combine(now.date(), turno["hora_salida_oficial"], tzinfo=now.tzinfo)
-        tolerancia_salida_previa = turno.get("tolerancia_salida_previa_minutos", 5)
-        tolerancia_salida_posterior = turno.get("tolerancia_salida_posterior_minutos", 15)
+    if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+        from app.services import calcular_y_registrar_bloques_horas_extra
         
-        # Calcular límites de tolerancia
-        limite_salida_previa = hora_salida_oficial - timedelta(minutes=tolerancia_salida_previa)
-        limite_salida_posterior = hora_salida_oficial + timedelta(minutes=tolerancia_salida_posterior)
+        # Calcular bloques de horas extra
+        calcular_y_registrar_bloques_horas_extra(db, asistencia, asistencia.hora_entrada_real, now)
         
-        # Caso 1: Salida dentro de tolerancia previa (5 min antes) -> Considerar como salida a tiempo
-        if now >= limite_salida_previa and now <= hora_salida_oficial:
-            asistencia.hora_salida_real = hora_salida_oficial  # Registrar como si hubiera salido a tiempo
-            asistencia.minutos_extra_calculados = 0
-            logger.info(f"DEBUG - Salida dentro de tolerancia previa, registrada como salida a tiempo")
-        
-        # Caso 2: Salida dentro de tolerancia posterior (15 min después) -> Considerar como salida a tiempo
-        elif now > hora_salida_oficial and now <= limite_salida_posterior:
-            asistencia.hora_salida_real = hora_salida_oficial  # Registrar como si hubiera salido a tiempo
-            asistencia.minutos_extra_calculados = 0
-            logger.info(f"DEBUG - Salida dentro de tolerancia posterior, registrada como salida a tiempo")
-        
-        # Caso 3: Salida después de tolerancia posterior -> Calcular horas extra y registrar como visita
-        elif now > limite_salida_posterior:
-            minutos_extra = int((now - hora_salida_oficial).total_seconds() / 60)
-            asistencia.minutos_extra_calculados = minutos_extra
-            logger.info(f"DEBUG - Salida después de tolerancia posterior, minutos extra: {minutos_extra}")
-            
-            # Crear visita para las horas extra
+        # Si hay horas extra, crear visita para autorización
+        if asistencia.minutos_extra_calculados > 0:
             crear_visita(db, empleado.id, asistencia.id)
-            
             db.add(ObservacionCaseta(
                 asistencia_id=asistencia.id,
-                tipo_observacion=f"Salida después de tolerancia posterior. {minutos_extra} minutos extra registrados como visita para autorización RRHH.",
+                tipo_observacion=f"Horas extra detectadas: {asistencia.minutos_extra_calculados} minutos. Registradas como bloques separados para autorización RRHH.",
                 fecha_registro=now
             ))
-        
-        # Caso 4: Salida muy temprano (antes de tolerancia previa) -> Registrar como salida temprana
-        elif now < limite_salida_previa:
-            asistencia.minutos_extra_calculados = 0
-            logger.info(f"DEBUG - Salida muy temprana (antes de tolerancia previa)")
-            
-            db.add(ObservacionCaseta(
-                asistencia_id=asistencia.id,
-                tipo_observacion="Salida temprana (antes de tolerancia previa)",
-                fecha_registro=now
-            ))
+    else:
+        # Si no hay turno definido, marcar como visita
+        crear_visita(db, empleado.id, asistencia.id)
+        db.add(ObservacionCaseta(
+            asistencia_id=asistencia.id,
+            tipo_observacion="Salida sin turno definido. Registrado como visita.",
+            fecha_registro=now
+        ))
     
     empleado.estado_actual = EstadoEmpleado.FUERA
     # Registrar evento de salida

@@ -170,6 +170,21 @@ class RegistroAsistencia(Base):
     empleado: Mapped[Empleado] = relationship()
 
 
+class BloqueHorasExtra(Base):
+    __tablename__ = "bloques_horas_extra"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asistencia_id: Mapped[int] = mapped_column(ForeignKey("registro_asistencias.id"), nullable=False)
+    tipo_bloque: Mapped[str] = mapped_column(String(20), nullable=False)  # "ANTES_INICIO" o "DESPUES_FIN"
+    hora_inicio: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hora_fin: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    minutos_extra: Mapped[int] = mapped_column(Integer, nullable=False)
+    validacion_supervisor: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    validacion_rrhh: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    asistencia: Mapped[RegistroAsistencia] = relationship()
+
+
 class ObservacionCaseta(Base):
     __tablename__ = "observaciones_caseta"
 

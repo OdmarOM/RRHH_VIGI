@@ -3,7 +3,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.time import utc_now
-from app.models import DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TurnoHorario, UsuarioSistema, Visita
+from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TurnoHorario, UsuarioSistema, Visita
 
 
 def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
@@ -20,10 +20,126 @@ def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
     return visita
 
 
+def calcular_y_registrar_bloques_horas_extra(db: Session, asistencia: RegistroAsistencia, hora_entrada: datetime, hora_salida: datetime):
+    """Calcula y registra bloques de horas extra separados (antes del inicio y después del fin del turno)."""
+    empleado = db.get(Empleado, asistencia.empleado_id)
+    if not empleado:
+        return
+    
+    # Obtener horario oficial del empleado
+    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    if not turno or not turno["hora_entrada_oficial"] or not turno["hora_salida_oficial"]:
+        return
+    
+    now = utc_now()
+    hora_entrada_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+    hora_salida_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+    
+    # Bloque 1: Horas extra antes del inicio del turno
+    if hora_entrada < hora_entrada_oficial:
+        hora_fin_bloque_1 = min(hora_salida, hora_entrada_oficial)
+        minutos_extra_1 = int((hora_fin_bloque_1 - hora_entrada).total_seconds() / 60)
+        
+        if minutos_extra_1 > 0:
+            bloque = BloqueHorasExtra(
+                asistencia_id=asistencia.id,
+                tipo_bloque="ANTES_INICIO",
+                hora_inicio=hora_entrada,
+                hora_fin=hora_fin_bloque_1,
+                minutos_extra=minutos_extra_1
+            )
+            db.add(bloque)
+    
+    # Bloque 2: Horas extra después del fin del turno
+    if hora_salida > hora_salida_oficial:
+        hora_inicio_bloque_2 = max(hora_entrada, hora_salida_oficial)
+        minutos_extra_2 = int((hora_salida - hora_inicio_bloque_2).total_seconds() / 60)
+        
+        if minutos_extra_2 > 0:
+            bloque = BloqueHorasExtra(
+                asistencia_id=asistencia.id,
+                tipo_bloque="DESPUES_FIN",
+                hora_inicio=hora_inicio_bloque_2,
+                hora_fin=hora_salida,
+                minutos_extra=minutos_extra_2
+            )
+            db.add(bloque)
+    
+    # Actualizar minutos_extra_calculados con el total
+    bloques = db.scalars(
+        select(BloqueHorasExtra).where(BloqueHorasExtra.asistencia_id == asistencia.id)
+    ).all()
+    total_minutos_extra = sum(b.minutos_extra for b in bloques)
+    asistencia.minutos_extra_calculados = total_minutos_extra
+    
+    db.commit()
+
+
+def verificar_ausencia_aprobada(db: Session, empleado_id: int, fecha: date) -> dict | None:
+    """Verifica si un empleado tiene una ausencia aprobada en la fecha especificada.
+    Retorna un dict con tipo_ausencia y otros detalles, o None si no hay ausencia."""
+    from app.models import TipoAusencia
+    
+    ausencia = db.scalar(
+        select(RegistroAusencia).where(
+            RegistroAusencia.empleado_id == empleado_id,
+            RegistroAusencia.fecha_inicio <= fecha,
+            RegistroAusencia.fecha_fin >= fecha,
+            RegistroAusencia.aprobado_rrhh == True
+        )
+    )
+    
+    if ausencia:
+        return {
+            "tipo_ausencia": ausencia.tipo_ausencia.value,
+            "pagada": ausencia.pagada,
+            "motivo": ausencia.motivo
+        }
+    return None
+
+
+def procesar_visitas_vencidas(db: Session):
+    """Marca como NO_PAGADA las visitas que no han sido resueltas después de 2 días."""
+    from app.models import EstadoVisita
+    
+    limite_dias = 2
+    fecha_limite = utc_now() - timedelta(days=limite_dias)
+    
+    visitas_vencidas = db.scalars(
+        select(Visita).where(
+            Visita.estado == EstadoVisita.PENDIENTE,
+            Visita.fecha_visita < fecha_limite
+        )
+    ).all()
+    
+    for visita in visitas_vencidas:
+        visita.estado = EstadoVisita.NO_PAGADA
+        db.add(ObservacionCaseta(
+            asistencia_id=visita.asistencia_id,
+            tipo_observacion=f"Visita marcada como NO PAGADA automáticamente después de {limite_dias} días sin resolución",
+            fecha_registro=utc_now()
+        ))
+    
+    db.commit()
+    return len(visitas_vencidas)
+
+
 def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict:
     """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos.
     Solo cuenta visitas pagadas y horas extra autorizadas por RRHH."""
     now = utc_now()
+    
+    # Verificar si hay ausencia aprobada (vacaciones/incapacidad)
+    ausencia = verificar_ausencia_aprobada(db, empleado_id, fecha)
+    if ausencia:
+        return {
+            "minutos_laborados": 0,
+            "minutos_extra": 0,
+            "minutos_descanso": 0,
+            "total_eventos": 0,
+            "eventos": [],
+            "ausencia": ausencia
+        }
     
     # Obtener todos los eventos del empleado en la fecha
     eventos = db.scalars(
@@ -272,6 +388,33 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
     if empleado.estado_actual == EstadoEmpleado.LABORANDO:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Colaborador está laborando; debe registrar salida")
 
+    # Verificar si tiene ausencia aprobada hoy
+    ausencia_hoy = verificar_ausencia_aprobada(db, empleado.id, now.date())
+    if ausencia_hoy:
+        # Si tiene ausencia aprobada, la entrada se toma como visita
+        asistencia = get_or_create_today_asistencia(db, empleado)
+        asistencia.hora_entrada_real = now
+        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada como visita
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones=f"Visita durante {ausencia_hoy['tipo_ausencia']}"
+        ))
+        # Crear visita automáticamente
+        crear_visita(db, empleado.id, asistencia.id)
+        db.add(ObservacionCaseta(
+            asistencia_id=asistencia.id,
+            tipo_observacion=f"Colaborador tiene {ausencia_hoy['tipo_ausencia']} aprobada. Entrada registrada como visita.",
+            fecha_registro=now
+        ))
+        db.commit()
+        db.refresh(asistencia)
+        return asistencia
+
     # Si está en EN_ESPERA_PASE, verificar si tiene validación de supervisor
     if empleado.estado_actual == EstadoEmpleado.EN_ESPERA_PASE:
         asistencia = get_or_create_today_asistencia(db, empleado)
@@ -322,12 +465,32 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
         asistencia.fecha_entrada_turno = now.date()
 
     hora_entrada_oficial = datetime.combine(now.date(), turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+    hora_salida_oficial = datetime.combine(now.date(), turno["hora_salida_oficial"], tzinfo=now.tzinfo)
     tolerancia_entrada_previa = turno.get("tolerancia_entrada_previa_minutos", 15)
     tolerancia_entrada_posterior = turno.get("tolerancia_minutos", 15)
     
     # Calcular límites de tolerancia
     limite_entrada_previa = hora_entrada_oficial - timedelta(minutes=tolerancia_entrada_previa)
     limite_entrada_posterior = hora_entrada_oficial + timedelta(minutes=tolerancia_entrada_posterior)
+    
+    # Caso especial: Si entra después del fin del turno -> Registrar como visita
+    if now > hora_salida_oficial:
+        asistencia.hora_entrada_real = now
+        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        empleado.estado_actual = EstadoEmpleado.LABORANDO
+        # Registrar evento de entrada como visita
+        db.add(EventoAsistencia(
+            empleado_id=empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=now,
+            observaciones="Visita después del fin del turno"
+        ))
+        # Crear visita automáticamente
+        crear_visita(db, empleado.id, asistencia.id)
+        db.commit()
+        db.refresh(asistencia)
+        return asistencia
     
     # Caso 1: Llegó antes del inicio de turno (dentro de tolerancia previa) -> Registrar como visita
     if now < hora_entrada_oficial and now >= limite_entrada_previa:

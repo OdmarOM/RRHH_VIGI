@@ -10,7 +10,7 @@ from datetime import datetime
 import os
 import tempfile
 from app.core.time import utc_now
-from app.models import Departamento, DetallePlantillaTurno, Empleado, PlantillaTurno, RegistroAsistencia, RegistroAusencia, RolNombre, SalidaTemporal, TurnoHorario, UsuarioSistema, Rol, SupervisorDepartamento
+from app.models import BloqueHorasExtra, Departamento, DetallePlantillaTurno, Empleado, PlantillaTurno, RegistroAsistencia, RegistroAusencia, RolNombre, SalidaTemporal, TurnoHorario, UsuarioSistema, Rol, SupervisorDepartamento
 from app.schemas import AusenciaCreate, AusenciaOut, EmpleadoCreate, EmpleadoOut, EmpleadoUpdate, TurnoCreate, TurnoOut, TurnoUpdate
 
 
@@ -511,6 +511,52 @@ def autorizar_horas_extra(asistencia_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "minutos_extra": asistencia.minutos_extra_calculados}
 
 
+@router.get("/bloques-horas-extra", dependencies=[ADMIN_ACCESS])
+def listar_bloques_horas_extra(
+    fecha_inicio: str,
+    fecha_fin: str,
+    empleado_id: int | None = None,
+    db: Session = Depends(get_db)
+):
+    """Lista los bloques de horas extra separados por tipo (ANTES_INICIO y DESPUES_FIN)"""
+    from datetime import datetime
+    inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
+    fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    query = select(BloqueHorasExtra).join(RegistroAsistencia).where(
+        RegistroAsistencia.fecha_turno >= inicio,
+        RegistroAsistencia.fecha_turno <= fin
+    )
+    
+    if empleado_id:
+        query = query.where(RegistroAsistencia.empleado_id == empleado_id)
+    
+    bloques = db.scalars(query.order_by(BloqueHorasExtra.hora_inicio)).all()
+    
+    reporte = []
+    for bloque in bloques:
+        asistencia = bloque.asistencia
+        empleado = asistencia.empleado
+        reporte.append({
+            "id": bloque.id,
+            "asistencia_id": bloque.asistencia_id,
+            "empleado_id": empleado.id,
+            "nombre_empleado": empleado.nombre_completo,
+            "numero_empleado": empleado.numero_empleado,
+            "departamento": empleado.departamento.nombre,
+            "fecha": asistencia.fecha_turno.isoformat(),
+            "tipo_bloque": bloque.tipo_bloque,
+            "hora_inicio": bloque.hora_inicio.isoformat(),
+            "hora_fin": bloque.hora_fin.isoformat(),
+            "minutos_extra": bloque.minutos_extra,
+            "horas_extra": round(bloque.minutos_extra / 60, 2),
+            "validado_supervisor": bloque.validacion_supervisor,
+            "validado_rrhh": bloque.validacion_rrhh
+        })
+    
+    return reporte
+
+
 # CRUD de departamentos
 @router.post("/departamentos", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
 def crear_departamento(nombre: str, db: Session = Depends(get_db)):
@@ -623,11 +669,21 @@ def reporte_horas_laboradas(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
-    from datetime import datetime
+    from datetime import datetime, timedelta
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    # Si es corte semanal, ajustar las fechas a viernes 8am
+    if corte_semanal:
+        if inicio.weekday() != 4:
+            dias_atras = (inicio.weekday() - 4) % 7
+            inicio = inicio - timedelta(days=dias_atras)
+        if fin.weekday() != 4:
+            dias_adelante = (4 - fin.weekday()) % 7
+            fin = fin + timedelta(days=dias_adelante)
     
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
@@ -662,11 +718,21 @@ def reporte_horas_extra(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
-    from datetime import datetime
+    from datetime import datetime, timedelta
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    # Si es corte semanal, ajustar las fechas a viernes 8am
+    if corte_semanal:
+        if inicio.weekday() != 4:
+            dias_atras = (inicio.weekday() - 4) % 7
+            inicio = inicio - timedelta(days=dias_atras)
+        if fin.weekday() != 4:
+            dias_adelante = (4 - fin.weekday()) % 7
+            fin = fin + timedelta(days=dias_adelante)
     
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
@@ -699,12 +765,35 @@ def reporte_asistencias(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
-    from datetime import datetime
-    from sqlalchemy import or_
+    from datetime import datetime, timedelta
+    from app.services import verificar_ausencia_aprobada
+    from app.models import TipoAusencia
+    
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    # Si es corte semanal, ajustar las fechas a viernes 8am
+    if corte_semanal:
+        # Inicio: viernes 8am
+        if inicio.weekday() != 4:  # 4 = viernes
+            # Si no es viernes, buscar el viernes anterior
+            dias_atras = (inicio.weekday() - 4) % 7
+            inicio = inicio - timedelta(days=dias_atras)
+        inicio_dt = datetime.combine(inicio, datetime.min.time(), tzinfo=utc_now().tzinfo) + timedelta(hours=8)
+        
+        # Fin: siguiente viernes 8am
+        if fin.weekday() != 4:  # 4 = viernes
+            # Si no es viernes, buscar el siguiente viernes
+            dias_adelante = (4 - fin.weekday()) % 7
+            fin = fin + timedelta(days=dias_adelante)
+        fin_dt = datetime.combine(fin, datetime.min.time(), tzinfo=utc_now().tzinfo) + timedelta(hours=8)
+        
+        # Ajustar a fechas para el reporte (usar las fechas completas)
+        inicio = inicio_dt.date()
+        fin = fin_dt.date()
     
     # Buscar turnos por asistencia
     query_turnos = select(TurnoHorario).where(
@@ -714,30 +803,103 @@ def reporte_asistencias(
     turnos_por_asistencia = db.scalars(query_turnos).all()
     empleado_ids_por_asistencia = set(t.empleado_id for t in turnos_por_asistencia)
     
-    # Filtrar registros de asistencia para estos empleados
-    query = select(RegistroAsistencia).where(
-        RegistroAsistencia.fecha_turno >= inicio,
-        RegistroAsistencia.fecha_turno <= fin,
-        RegistroAsistencia.empleado_id.in_(empleado_ids_por_asistencia),
-        RegistroAsistencia.hora_entrada_real.is_not(None)
-    )
-    
+    # Filtrar empleados según parámetro
+    empleados_query = select(Empleado).where(Empleado.id.in_(empleado_ids_por_asistencia))
     if empleado_id:
-        query = query.where(RegistroAsistencia.empleado_id == empleado_id)
+        empleados_query = empleados_query.where(Empleado.id == empleado_id)
     
-    registros = db.scalars(query.order_by(RegistroAsistencia.fecha_turno)).all()
+    empleados = db.scalars(empleados_query).all()
     
     reporte = []
-    for reg in registros:
-        reporte.append({
-            "empleado_id": reg.empleado_id,
-            "fecha": reg.fecha_turno.isoformat(),
-            "hora_entrada": reg.hora_entrada_real.isoformat() if reg.hora_entrada_real else None,
-            "hora_salida": reg.hora_salida_real.isoformat() if reg.hora_salida_real else None,
-            "estado_registro": reg.estado_registro.value if reg.estado_registro else None
-        })
-
+    
+    # Generar reporte día por día para cada empleado
+    for empleado in empleados:
+        fecha_actual = inicio
+        while fecha_actual <= fin:
+            # Verificar si hay registro de asistencia
+            asistencia = db.scalar(
+                select(RegistroAsistencia).where(
+                    RegistroAsistencia.empleado_id == empleado.id,
+                    RegistroAsistencia.fecha_turno == fecha_actual
+                )
+            )
+            
+            if asistencia and asistencia.hora_entrada_real:
+                # Hay registro de asistencia
+                leyenda = None
+                if asistencia.estado_registro:
+                    leyenda = asistencia.estado_registro.value
+                
+                # Calcular horas laboradas
+                from app.services import calcular_horas_laboradas
+                horas_info = calcular_horas_laboradas(db, empleado.id, fecha_actual)
+                horas_laboradas = round(horas_info.get("minutos_laborados", 0) / 60, 2)
+                horas_extra = round(horas_info.get("minutos_extra", 0) / 60, 2)
+                
+                reporte.append({
+                    "empleado_id": empleado.id,
+                    "nombre_empleado": empleado.nombre_completo,
+                    "numero_empleado": empleado.numero_empleado,
+                    "fecha": fecha_actual.isoformat(),
+                    "hora_entrada": asistencia.hora_entrada_real.isoformat() if asistencia.hora_entrada_real else None,
+                    "hora_salida": asistencia.hora_salida_real.isoformat() if asistencia.hora_salida_real else None,
+                    "estado_registro": leyenda,
+                    "leyenda": leyenda,
+                    "horas_laboradas": horas_laboradas,
+                    "horas_extra": horas_extra
+                })
+            else:
+                # No hay registro de asistencia, verificar si hay ausencia aprobada
+                ausencia = verificar_ausencia_aprobada(db, empleado.id, fecha_actual)
+                if ausencia:
+                    # Hay ausencia aprobada
+                    if ausencia["tipo_ausencia"] == TipoAusencia.VACACIONES.value:
+                        leyenda = "V"  # Vacaciones
+                    elif ausencia["tipo_ausencia"] == TipoAusencia.INCAPACIDAD.value:
+                        leyenda = "I"  # Incapacidad
+                    else:
+                        leyenda = "A"  # Otro tipo de ausencia
+                    
+                    reporte.append({
+                        "empleado_id": empleado.id,
+                        "nombre_empleado": empleado.nombre_completo,
+                        "numero_empleado": empleado.numero_empleado,
+                        "fecha": fecha_actual.isoformat(),
+                        "hora_entrada": None,
+                        "hora_salida": None,
+                        "estado_registro": None,
+                        "leyenda": leyenda,
+                        "ausencia": ausencia,
+                        "horas_laboradas": 0,
+                        "horas_extra": 0
+                    })
+                else:
+                    # No hay ausencia ni asistencia - ausencia injustificada
+                    reporte.append({
+                        "empleado_id": empleado.id,
+                        "nombre_empleado": empleado.nombre_completo,
+                        "numero_empleado": empleado.numero_empleado,
+                        "fecha": fecha_actual.isoformat(),
+                        "hora_entrada": None,
+                        "hora_salida": None,
+                        "estado_registro": None,
+                        "leyenda": "F",  # Falta injustificada
+                        "horas_laboradas": 0,
+                        "horas_extra": 0
+                    })
+            
+            fecha_actual += timedelta(days=1)
+    
     return reporte
+
+
+@router.post("/procesar-visitas-vencidas", dependencies=[ADMIN_ACCESS])
+def procesar_visitas_vencidas(db: Session = Depends(get_db)):
+    """Procesa visitas vencidas (pendientes por más de 2 días) y las marca como NO_PAGADA."""
+    from app.services import procesar_visitas_vencidas
+    
+    cantidad = procesar_visitas_vencidas(db)
+    return {"ok": True, "visitas_procesadas": cantidad}
 
 
 @router.get("/reportes/horas-laboradas/excel", dependencies=[ADMIN_ACCESS])
@@ -745,11 +907,21 @@ def exportar_horas_laboradas_excel(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
     from datetime import datetime, timedelta
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    # Si es corte semanal, ajustar las fechas a viernes 8am
+    if corte_semanal:
+        if inicio.weekday() != 4:
+            dias_atras = (inicio.weekday() - 4) % 7
+            inicio = inicio - timedelta(days=dias_atras)
+        if fin.weekday() != 4:
+            dias_adelante = (4 - fin.weekday()) % 7
+            fin = fin + timedelta(days=dias_adelante)
 
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
@@ -851,11 +1023,21 @@ def exportar_horas_extra_excel(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
     from datetime import datetime, timedelta
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
+    
+    # Si es corte semanal, ajustar las fechas a viernes 8am
+    if corte_semanal:
+        if inicio.weekday() != 4:
+            dias_atras = (inicio.weekday() - 4) % 7
+            inicio = inicio - timedelta(days=dias_atras)
+        if fin.weekday() != 4:
+            dias_adelante = (4 - fin.weekday()) % 7
+            fin = fin + timedelta(days=dias_adelante)
 
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,

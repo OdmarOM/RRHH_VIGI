@@ -32,7 +32,7 @@ export function Admin() {
   const [filtroVisitas, setFiltroVisitas] = useState('')
   const [horasExtraPendientes, setHorasExtraPendientes] = useState([])
   const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
-  const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '' })
+  const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '', corte_semanal: false })
   const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
   const [menuAbierto, setMenuAbierto] = useState(false)
 
@@ -348,6 +348,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
       
       const { data } = await api.get(`/admin/reportes/horas-laboradas?${params}`)
       setReporteHoras(data)
@@ -365,6 +366,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const { data } = await api.get(`/admin/reportes/horas-extra?${params}`)
       setReporteHorasExtra(data)
@@ -407,6 +409,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const { data } = await api.get(`/admin/reportes/asistencias?${params}`)
       setReporteAsistencias(data)
@@ -423,6 +426,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const endpoint = tipo === 'horas-laboradas' ? '/admin/reportes/horas-laboradas/excel' :
                        tipo === 'horas-extra' ? '/admin/reportes/horas-extra/excel' :
@@ -1653,6 +1657,15 @@ export function Admin() {
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
+              <input 
+                type="checkbox" 
+                checked={reporteForm.corte_semanal} 
+                onChange={(e) => setReporteForm({ ...reporteForm, corte_semanal: e.target.checked })}
+                style={{ width: '1rem', height: '1rem' }}
+              />
+              Corte semanal (Viernes 8am - Viernes 8am)
+            </label>
             <button className="btn">📊 Generar Reporte</button>
             <button 
               type="button" 
@@ -1703,6 +1716,15 @@ export function Admin() {
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
+              <input 
+                type="checkbox" 
+                checked={reporteForm.corte_semanal} 
+                onChange={(e) => setReporteForm({ ...reporteForm, corte_semanal: e.target.checked })}
+                style={{ width: '1rem', height: '1rem' }}
+              />
+              Corte semanal (Viernes 8am - Viernes 8am)
+            </label>
             <button className="btn">📊 Generar Reporte</button>
             <button 
               type="button" 
@@ -1799,6 +1821,15 @@ export function Admin() {
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
+              <input 
+                type="checkbox" 
+                checked={reporteForm.corte_semanal} 
+                onChange={(e) => setReporteForm({ ...reporteForm, corte_semanal: e.target.checked })}
+                style={{ width: '1rem', height: '1rem' }}
+              />
+              Corte semanal (Viernes 8am - Viernes 8am)
+            </label>
             <button className="btn">📊 Generar Reporte</button>
             <button 
               type="button" 
