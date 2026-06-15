@@ -143,54 +143,15 @@ export function Supervisor() {
       <button className="btn" onClick={cargar} style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}>🔄 Actualizar</button>
     </section>
 
-    <div style={{ display: 'flex', gap: '0.5rem' }}>
-      <button 
-        onClick={() => setTab('incidencias')}
-        style={{ 
-          padding: '0.75rem 1.5rem', 
-          background: tab === 'incidencias' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : '#1e293b', 
-          border: 'none', 
-          borderRadius: '0.5rem', 
-          color: '#fff', 
-          cursor: 'pointer', 
-          fontWeight: 700 
-        }}
-      >
-        📋 Pases de Retardo
-      </button>
-      <button 
-        onClick={() => setTab('horas-extra')}
-        style={{ 
-          padding: '0.75rem 1.5rem', 
-          background: tab === 'horas-extra' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : '#1e293b', 
-          border: 'none', 
-          borderRadius: '0.5rem', 
-          color: '#fff', 
-          cursor: 'pointer', 
-          fontWeight: 700 
-        }}
-      >
-        ⏰ Horas Extra
-      </button>
-      <button 
-        onClick={() => setTab('turnos')}
-        style={{ 
-          padding: '0.75rem 1.5rem', 
-          background: tab === 'turnos' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : '#1e293b', 
-          border: 'none', 
-          borderRadius: '0.5rem', 
-          color: '#fff', 
-          cursor: 'pointer', 
-          fontWeight: 700 
-        }}
-      >
-        📅 Turnos
-      </button>
+    <div className="tabs">
+      <button className={`tab${tab === 'incidencias' ? ' active' : ''}`} onClick={() => setTab('incidencias')}>📋 Pases de Retardo</button>
+      <button className={`tab${tab === 'horas-extra' ? ' active' : ''}`} onClick={() => setTab('horas-extra')}>⏰ Horas Extra</button>
+      <button className={`tab${tab === 'turnos' ? ' active' : ''}`} onClick={() => setTab('turnos')}>📅 Turnos</button>
     </div>
 
-    {message && <section className="panel" style={{ background: message.includes('✅') ? 'rgba(5,150,105,0.1)' : 'rgba(220,38,38,0.1)', border: `2px solid ${message.includes('✅') ? '#059669' : '#dc2626'}`, padding: '1rem' }}>
-      <p style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0 }}>{message}</p>
-    </section>}
+    {message && <div className="toast" style={{ background: message.includes('✅') ? 'rgba(5,150,105,0.95)' : message.includes('⚠️') ? 'rgba(234,179,8,0.95)' : 'rgba(220,38,38,0.95)', color: '#fff' }}>
+      {message}
+    </div>}
 
     {tab === 'incidencias' && (loading ? <p style={{ color: '#94a3b8', textAlign: 'center', padding: '2rem' }}>Cargando incidencias...</p> : items.length === 0 ? <section className="panel" style={{ textAlign: 'center', padding: '3rem' }}>
       <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>✅</div>
@@ -307,7 +268,7 @@ export function Supervisor() {
             <div>
               <button
                 onClick={() => setTurnoForm({ ...turnoForm, empleado_id: '' })}
-                style={{ padding: '0.5rem 1rem', background: '#64748b', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginBottom: '1rem' }}
+                className="btn-sm btn-sm-gray" style={{ marginBottom: '1rem' }}
               >
                 ← Volver a lista de colaboradores
               </button>
@@ -319,7 +280,7 @@ export function Supervisor() {
                     <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
                     <button
                       onClick={() => romperPlantilla(empleado.id)}
-                      style={{ padding: '0.25rem 0.5rem', background: '#f97316', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.75rem' }}
+                      className="btn-sm btn-sm-yellow"
                     >
                       Romper plantilla
                     </button>
@@ -334,7 +295,7 @@ export function Supervisor() {
                     <p style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '1rem' }}>
                       Este colaborador usa la plantilla "{plantillaAsignada.nombre}". Los horarios se muestran en modo solo lectura.
                     </p>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                    <table className="table">
                       <thead>
                         <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
@@ -376,7 +337,7 @@ export function Supervisor() {
                     </table>
                   </>
                 ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                  <table className="table">
                     <thead>
                       <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                         <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
@@ -444,7 +405,7 @@ export function Supervisor() {
                               {turno && turno.id ? (
                                 <button
                                   onClick={() => guardarTurno(i)}
-                                  style={{ padding: '0.25rem 0.5rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.75rem' }}
+                                  className="btn-sm btn-sm-green"
                                 >
                                   Guardar
                                 </button>

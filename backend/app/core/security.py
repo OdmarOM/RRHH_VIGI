@@ -1,20 +1,47 @@
 from datetime import timedelta
 from jose import jwt
-from passlib.context import CryptContext
 from app.core.config import get_settings
 from app.core.time import utc_now
+import hashlib
+import secrets
 
 
 settings = get_settings()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash password using SHA-256 with salt"""
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((password + salt).encode()).hexdigest()
+    return f"sha256${salt}${hashed}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    """Verify password against hash"""
+    try:
+        # Handle old passlib hashes
+        if password_hash.startswith("$pbkdf2-sha256$") or password_hash.startswith("$5$rounds=") or password_hash.startswith("pbkdf2_sha256$"):
+            # For old hashes, temporarily use passlib
+            from passlib.context import CryptContext
+            pwd_context = CryptContext(schemes=["pbkdf2_sha256", "sha256_crypt"], deprecated="auto")
+            try:
+                return pwd_context.verify(password, password_hash)
+            except:
+                return False
+        
+        # Handle new simple hashes
+        if password_hash.startswith("sha256$"):
+            parts = password_hash.split("$")
+            if len(parts) == 3:
+                salt = parts[1]
+                stored_hash = parts[2]
+                computed_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+                return secrets.compare_digest(computed_hash, stored_hash)
+        
+        return False
+    except Exception as e:
+        print(f"Error verifying password: {e}")
+        return False
 
 
 def create_access_token(subject: str, role: str) -> str:

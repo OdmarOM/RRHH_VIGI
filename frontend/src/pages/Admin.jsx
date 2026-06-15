@@ -33,8 +33,9 @@ export function Admin() {
   const [horasExtraPendientes, setHorasExtraPendientes] = useState([])
   const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
   const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '', corte_semanal: false })
-  const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
+  const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, porcentaje_aportacion: 100, motivo: '' })
   const [menuAbierto, setMenuAbierto] = useState(false)
+  const rolUsuario = localStorage.getItem('rol')
 
   // Calcular semana actual (viernes a viernes) por default
   useEffect(() => {
@@ -67,7 +68,7 @@ export function Admin() {
   }, [])
   const [subTabTurnos, setSubTabTurnos] = useState('turnos-individuales')
   const [subTabReportes, setSubTabReportes] = useState('horas-laboradas')
-  const [nuevoDetalle, setNuevoDetalle] = useState({ dia: 0, entrada: '', salida: '', tolerancia: 15, esDescanso: false, esPorAsistencia: false })
+  const [nuevoDetalle, setNuevoDetalle] = useState({ dia: 0, entrada: '', salida: '', tolerancia: 15, tolerancia_entrada_previa: 15, tolerancia_salida_posterior: 15, tolerancia_salida_previa: 5, esDescanso: false, esPorAsistencia: false })
   const [turnosTemporales, setTurnosTemporales] = useState({})
 
   async function cargar() {
@@ -124,6 +125,28 @@ export function Admin() {
     setTimeout(() => setMessage(''), 3000)
   }
 
+  async function actualizarDuracionVisita(visitaId, minutos) {
+    try {
+      await api.put(`/caseta/visitas/${visitaId}/duracion`, null, { params: { minutos } })
+      setMessage('✅ Duración de visita actualizada')
+      cargarVisitas()
+    } catch {
+      setMessage('❌ Error al actualizar duración de visita')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function modificarHorasExtra(asistenciaId, minutos) {
+    try {
+      await api.put(`/admin/asistencias/${asistenciaId}/modificar-horas-extra`, null, { params: { minutos } })
+      setMessage('✅ Horas extra modificadas')
+      cargarHorasExtraPendientes()
+    } catch {
+      setMessage('❌ Error al modificar horas extra')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
   async function autorizarHorasExtra(asistenciaId) {
     try {
       await api.put(`/admin/asistencias/${asistenciaId}/autorizar-horas-extra`)
@@ -131,6 +154,28 @@ export function Admin() {
       cargarHorasExtraPendientes()
     } catch {
       setMessage('❌ Error al autorizar horas extra')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function revocarAutorizacionRRHH(asistenciaId) {
+    try {
+      await api.put(`/admin/asistencias/${asistenciaId}/revocar-autorizacion-rrhh`)
+      setMessage('✅ Autorización RRHH revocada')
+      cargarHorasExtraPendientes()
+    } catch {
+      setMessage('❌ Error al revocar autorización RRHH')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function revocarValidacionSupervisor(asistenciaId) {
+    try {
+      await api.put(`/admin/asistencias/${asistenciaId}/revocar-validacion-supervisor`)
+      setMessage('✅ Validación supervisor revocada')
+      cargarHorasExtraPendientes()
+    } catch {
+      setMessage('❌ Error al revocar validación supervisor')
     }
     setTimeout(() => setMessage(''), 3000)
   }
@@ -308,10 +353,11 @@ export function Admin() {
         ...ausenciaForm, 
         empleado_id: Number(ausenciaForm.empleado_id),
         fecha_inicio: new Date(ausenciaForm.fecha_inicio).toISOString().split('T')[0],
-        fecha_fin: new Date(ausenciaForm.fecha_fin).toISOString().split('T')[0]
+        fecha_fin: new Date(ausenciaForm.fecha_fin).toISOString().split('T')[0],
+        porcentaje_aportacion: Number(ausenciaForm.porcentaje_aportacion)
       })
       setMessage('✅ Ausencia creada')
-      setAusenciaForm({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, motivo: '' })
+      setAusenciaForm({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, porcentaje_aportacion: 100, motivo: '' })
       cargar()
     } catch {
       setMessage('❌ Error al crear ausencia')
@@ -578,12 +624,15 @@ export function Admin() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  async function actualizarDetallePlantilla(plantillaId, detalleId, horaEntrada, horaSalida, tolerancia, esDescanso = false, esPorAsistencia = false) {
+  async function actualizarDetallePlantilla(plantillaId, detalleId, horaEntrada, horaSalida, toleranciaEntradaPrevia, toleranciaEntradaDespues, toleranciaSalidaPrevia, toleranciaSalidaPosterior, esDescanso = false, esPorAsistencia = false) {
     try {
       await api.put(`/admin/plantillas-turnos/${plantillaId}/detalles/${detalleId}`, {
         hora_entrada: horaEntrada,
         hora_salida: horaSalida,
-        tolerancia,
+        tolerancia_entrada_previa_minutos: toleranciaEntradaPrevia,
+        tolerancia_minutos: toleranciaEntradaDespues,
+        tolerancia_salida_previa_minutos: toleranciaSalidaPrevia,
+        tolerancia_salida_posterior_minutos: toleranciaSalidaPosterior,
         es_descanso: esDescanso,
         es_por_asistencia: esPorAsistencia
       })
@@ -607,13 +656,16 @@ export function Admin() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  async function agregarDetallePlantilla(plantillaId, diaSemana, horaEntrada, horaSalida, tolerancia, esDescanso = false, esPorAsistencia = false) {
+  async function agregarDetallePlantilla(plantillaId, diaSemana, horaEntrada, horaSalida, toleranciaEntradaPrevia, toleranciaEntradaDespues, toleranciaSalidaPrevia, toleranciaSalidaPosterior, esDescanso = false, esPorAsistencia = false) {
     try {
       await api.post(`/admin/plantillas-turnos/${plantillaId}/detalles`, {
         dia_semana: diaSemana,
         hora_entrada: horaEntrada,
         hora_salida: horaSalida,
-        tolerancia,
+        tolerancia_entrada_previa_minutos: toleranciaEntradaPrevia,
+        tolerancia_minutos: toleranciaEntradaDespues,
+        tolerancia_salida_previa_minutos: toleranciaSalidaPrevia,
+        tolerancia_salida_posterior_minutos: toleranciaSalidaPosterior,
         es_descanso: esDescanso,
         es_por_asistencia: esPorAsistencia
       })
@@ -702,7 +754,7 @@ export function Admin() {
     e.puesto.toLowerCase().includes(filtro.toLowerCase())
   )
 
-  const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+  const diasSemana = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
 
   return <main style={{ minHeight: '100vh', background: '#020617', color: '#f8fafc', display: 'flex', flexDirection: 'column' }}>
     <Navigation />
@@ -767,9 +819,9 @@ export function Admin() {
         <button className="btn" onClick={cargar} style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}>🔄 Actualizar</button>
       </section>
 
-      {message && <section className="panel" style={{ background: message.includes('✅') ? 'rgba(5,150,105,0.1)' : 'rgba(220,38,38,0.1)', border: `2px solid ${message.includes('✅') ? '#059669' : '#dc2626'}`, padding: '1rem' }}>
-        <p style={{ fontSize: '1.125rem', fontWeight: 700, margin: 0 }}>{message}</p>
-      </section>}
+      {message && <div className="toast" style={{ background: message.includes('✅') ? 'rgba(5,150,105,0.95)' : message.includes('⚠️') ? 'rgba(234,179,8,0.95)' : 'rgba(220,38,38,0.95)', color: '#fff' }}>
+        {message}
+      </div>}
 
       {tab === 'empleados' && <section style={{ display: 'grid', gap: '1.5rem' }}>
         <form onSubmit={editandoEmpleado ? actualizarEmpleado : crearEmpleado} className="panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
@@ -800,9 +852,9 @@ export function Admin() {
                 <span style={{ fontWeight: 700, color: e.estado_actual === 'Adentro' ? '#059669' : e.estado_actual === 'Fuera' ? '#64748b' : '#eab308' }}>{e.estado_actual}</span>
               </div>
               <div style={{ display: 'flex', gap: '0.25rem' }}>
-                <button onClick={() => iniciarEdicionEmpleado(e)} style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✏️ Editar</button>
-                <button onClick={() => toggleActivoEmpleado(e.id, e.activo)} style={{ padding: '0.5rem 1rem', background: e.activo ? '#eab308' : '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>{e.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
-                <button onClick={() => eliminarEmpleado(e.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️ Eliminar</button>
+                <button onClick={() => iniciarEdicionEmpleado(e)} className="btn-sm btn-sm-blue">✏️ Editar</button>
+                <button onClick={() => toggleActivoEmpleado(e.id, e.activo)} className={`btn-sm ${e.activo ? 'btn-sm-yellow' : 'btn-sm-green'}`}>{e.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
+                <button onClick={() => eliminarEmpleado(e.id)} className="btn-sm btn-sm-red">🗑️ Eliminar</button>
               </div>
             </div>
           </section>)}
@@ -884,10 +936,14 @@ export function Admin() {
                     setTurnoForm({ ...turnoForm, empleado_id: '' })
                     setTurnosTemporales({})
                   }}
-                  style={{ padding: '0.5rem 1rem', background: '#64748b', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginBottom: '1rem' }}
+                  className="btn-sm btn-sm-gray" style={{ marginBottom: '1rem' }}
                 >
                   ← Volver a lista de empleados
                 </button>
+                <div style={{ marginBottom: '1rem', padding: '1rem', background: 'rgba(59, 130, 246, 0.1)', border: '1px solid #3b82f6', borderRadius: '0.5rem' }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 0.25rem 0', color: '#3b82f6' }}>{empleado?.numero_empleado} - {empleado?.nombre_completo}</h3>
+                  <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: 0 }}>{empleado?.puesto} • Depto: {departamentos.find(d => d.id === empleado?.departamento_id)?.nombre || 'Sin departamento'}</p>
+                </div>
                 <div style={{ marginBottom: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
                   <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Plantilla de Turno</h4>
                   {plantillaAsignada ? (
@@ -895,7 +951,7 @@ export function Admin() {
                       <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
                       <button 
                         onClick={() => romperPlantillaEmpleado(Number(turnoForm.empleado_id))}
-                        style={{ padding: '0.5rem 1rem', background: '#eab308', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                        className="btn-sm btn-sm-yellow"
                       >
                         Romper referencia (crear horario personal)
                       </button>
@@ -924,7 +980,7 @@ export function Admin() {
                       <p style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '1rem' }}>
                         Este colaborador usa la plantilla "{plantillaAsignada.nombre}". Los horarios se muestran en modo solo lectura.
                       </p>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                      <table className="table">
                         <thead>
                           <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                             <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
@@ -950,7 +1006,7 @@ export function Admin() {
                       </table>
                     </>
                   ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                    <table className="table">
                       <thead>
                         <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
@@ -1117,14 +1173,14 @@ export function Admin() {
                               <td style={{ padding: '0.75rem' }}>
                                 <button
                                   onClick={() => guardarTurno(idx)}
-                                  style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                                  className="btn-sm btn-sm-green"
                                 >
                                   💾 Guardar
                                 </button>
                                 {turno?.id && (
                                   <button
                                     onClick={() => eliminarTurno(turno.id)}
-                                    style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginLeft: '0.5rem' }}
+                                    className="btn-sm btn-sm-red" style={{ marginLeft: '0.5rem' }}
                                   >
                                     🗑️
                                   </button>
@@ -1180,13 +1236,13 @@ export function Admin() {
                           setPlantillaSeleccionada(p.id)
                           cargarDetallesPlantilla(p.id)
                         }}
-                        style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                        className="btn-sm btn-sm-blue"
                       >
                         👁️ Ver Detalles
                       </button>
                       <button
                         onClick={() => eliminarPlantilla(p.id)}
-                        style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                        className="btn-sm btn-sm-red"
                       >
                         🗑️
                       </button>
@@ -1200,25 +1256,34 @@ export function Admin() {
           {plantillaSeleccionada && (
             <div style={{ padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>Detalles de Plantilla</h3>
+                <div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 0.25rem 0' }}>Detalles de Plantilla</h3>
+                  {(() => {
+                    const plantilla = plantillas.find(p => p.id === plantillaSeleccionada)
+                    return plantilla ? (
+                      <p style={{ color: '#3b82f6', fontSize: '0.875rem', margin: 0, fontWeight: 700 }}>📋 {plantilla.nombre} {plantilla.descripcion ? `- ${plantilla.descripcion}` : ''}</p>
+                    ) : null
+                  })()}
+                </div>
                 <button
                   onClick={() => {
                     setPlantillaSeleccionada('')
                     setDetallesPlantilla([])
                   }}
-                  style={{ padding: '0.5rem 1rem', background: '#64748b', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                  className="btn-sm btn-sm-gray"
                 >
                   ✕ Cerrar
                 </button>
               </div>
 
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+              <table className="table">
                 <thead>
                   <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Día</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tolerancia</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tol. Entrada</th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tol. Salida</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Descanso</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Por Asistencia</th>
                     <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
@@ -1230,7 +1295,10 @@ export function Admin() {
                     const temporal = detallesTemporales[idx] || {}
                     const valorEntrada = temporal.hora_entrada !== undefined ? temporal.hora_entrada : (detalle?.hora_entrada_oficial || '')
                     const valorSalida = temporal.hora_salida !== undefined ? temporal.hora_salida : (detalle?.hora_salida_oficial || '')
-                    const valorTolerancia = temporal.tolerancia !== undefined ? temporal.tolerancia : (detalle?.tolerancia_minutos || 15)
+                    const valorTolEntAntes = temporal.tolerancia_entrada_previa !== undefined ? temporal.tolerancia_entrada_previa : (detalle?.tolerancia_entrada_previa_minutos || 15)
+                    const valorTolEntDesp = temporal.tolerancia_entrada_despues !== undefined ? temporal.tolerancia_entrada_despues : (detalle?.tolerancia_minutos || 15)
+                    const valorTolSalAntes = temporal.tolerancia_salida_previa !== undefined ? temporal.tolerancia_salida_previa : (detalle?.tolerancia_salida_previa_minutos || 5)
+                    const valorTolSalDesp = temporal.tolerancia_salida_posterior !== undefined ? temporal.tolerancia_salida_posterior : (detalle?.tolerancia_salida_posterior_minutos || 15)
                     const valorDescanso = temporal.es_descanso !== undefined ? temporal.es_descanso : (detalle?.es_descanso || false)
                     const valorPorAsistencia = temporal.es_por_asistencia !== undefined ? temporal.es_por_asistencia : (detalle?.es_por_asistencia || false)
                     return (
@@ -1267,19 +1335,84 @@ export function Admin() {
                           />
                         </td>
                         <td style={{ padding: '0.75rem' }}>
-                          <input
-                            type="number"
-                            className="input"
-                            value={valorTolerancia}
-                            onChange={(e) => {
-                              setDetallesTemporales({
-                                ...detallesTemporales,
-                                [idx]: { ...detallesTemporales[idx], tolerancia: Number(e.target.value) }
-                              })
-                            }}
-                            disabled={valorPorAsistencia}
-                            style={{ width: '60px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem' }}
-                          />
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Antes</span>
+                              <input
+                                type="number"
+                                className="input"
+                                placeholder="15"
+                                value={valorTolEntAntes}
+                                onChange={(e) => {
+                                  setDetallesTemporales({
+                                    ...detallesTemporales,
+                                    [idx]: { ...detallesTemporales[idx], tolerancia_entrada_previa: Number(e.target.value) }
+                                  })
+                                }}
+                                disabled={valorPorAsistencia}
+                                style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                              />
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Desp</span>
+                              <input
+                                type="number"
+                                className="input"
+                                placeholder="15"
+                                value={valorTolEntDesp}
+                                onChange={(e) => {
+                                  setDetallesTemporales({
+                                    ...detallesTemporales,
+                                    [idx]: { ...detallesTemporales[idx], tolerancia_entrada_despues: Number(e.target.value) }
+                                  })
+                                }}
+                                disabled={valorPorAsistencia}
+                                style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                              />
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ padding: '0.75rem' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Antes</span>
+                              <input
+                                type="number"
+                                className="input"
+                                placeholder="5"
+                                value={valorTolSalAntes}
+                                onChange={(e) => {
+                                  setDetallesTemporales({
+                                    ...detallesTemporales,
+                                    [idx]: { ...detallesTemporales[idx], tolerancia_salida_previa: Number(e.target.value) }
+                                  })
+                                }}
+                                disabled={valorPorAsistencia}
+                                style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                              />
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8', width: '20px' }}>Desp</span>
+                              <input
+                                type="number"
+                                className="input"
+                                placeholder="15"
+                                value={valorTolSalDesp}
+                                onChange={(e) => {
+                                  setDetallesTemporales({
+                                    ...detallesTemporales,
+                                    [idx]: { ...detallesTemporales[idx], tolerancia_salida_posterior: Number(e.target.value) }
+                                  })
+                                }}
+                                disabled={valorPorAsistencia}
+                                style={{ width: '45px', background: 'rgba(30,41,59,0.5)', border: '1px solid #1e293b', color: '#f8fafc', padding: '0.25rem', borderRadius: '0.25rem', fontSize: '0.75rem' }}
+                              />
+                              <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>min</span>
+                            </div>
+                          </div>
                         </td>
                         <td style={{ padding: '0.75rem' }}>
                           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1323,20 +1456,20 @@ export function Admin() {
                             <>
                               <button
                                 onClick={() => {
-                                  actualizarDetallePlantilla(plantillaSeleccionada, detalle.id, valorEntrada, valorSalida, valorTolerancia, valorDescanso, valorPorAsistencia)
+                                  actualizarDetallePlantilla(plantillaSeleccionada, detalle.id, valorEntrada, valorSalida, valorTolEntAntes, valorTolEntDesp, valorTolSalAntes, valorTolSalDesp, valorDescanso, valorPorAsistencia)
                                   setDetallesTemporales(prev => {
                                     const nuevo = { ...prev }
                                     delete nuevo[idx]
                                     return nuevo
                                   })
                                 }}
-                                style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                                className="btn-sm btn-sm-green"
                               >
                                 💾
                               </button>
                               <button
                                 onClick={() => eliminarDetallePlantilla(plantillaSeleccionada, detalle.id)}
-                                style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem', marginLeft: '0.5rem' }}
+                                className="btn-sm btn-sm-red" style={{ marginLeft: '0.5rem' }}
                               >
                                 🗑️
                               </button>
@@ -1344,14 +1477,14 @@ export function Admin() {
                           ) : (
                             <button
                               onClick={() => {
-                                agregarDetallePlantilla(plantillaSeleccionada, idx, valorEntrada, valorSalida, valorTolerancia, valorDescanso, valorPorAsistencia)
+                                agregarDetallePlantilla(plantillaSeleccionada, idx, valorEntrada, valorSalida, valorTolEntAntes, valorTolEntDesp, valorTolSalAntes, valorTolSalDesp, valorDescanso, valorPorAsistencia)
                                 setDetallesTemporales(prev => {
                                   const nuevo = { ...prev }
                                   delete nuevo[idx]
                                   return nuevo
                                 })
                               }}
-                              style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}
+                              className="btn-sm btn-sm-green"
                             >
                               ➕
                             </button>
@@ -1384,6 +1517,20 @@ export function Admin() {
             <input type="checkbox" checked={ausenciaForm.pagada} onChange={(e) => setAusenciaForm({ ...ausenciaForm, pagada: e.target.checked })} />
             Pagada
           </label>
+          {ausenciaForm.tipo_ausencia === 'Incapacidad' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label style={{ color: '#f8fafc', whiteSpace: 'nowrap' }}>% Aportación:</label>
+              <input 
+                className="input" 
+                type="number" 
+                min="0" 
+                max="100" 
+                value={ausenciaForm.porcentaje_aportacion} 
+                onChange={(e) => setAusenciaForm({ ...ausenciaForm, porcentaje_aportacion: Math.min(100, Math.max(0, Number(e.target.value))) })} 
+                required 
+              />
+            </div>
+          )}
           <input className="input" placeholder="Motivo (opcional)" value={ausenciaForm.motivo} onChange={(e) => setAusenciaForm({ ...ausenciaForm, motivo: e.target.value })} />
           <button className="btn">➕ Crear Ausencia</button>
         </form>
@@ -1391,7 +1538,7 @@ export function Admin() {
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Ausencias Registradas</h3>
           {ausencias.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay ausencias registradas</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
@@ -1418,8 +1565,8 @@ export function Admin() {
                       <td style={{ padding: '0.75rem' }}>{a.aprobado_rrhh ? '✅ Aprobado' : '⏳ Pendiente'}</td>
                       <td style={{ padding: '0.75rem' }}>
                         <div style={{ display: 'flex', gap: '0.25rem' }}>
-                          {!a.aprobado_rrhh && <button onClick={() => aprobarAusencia(a.id)} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Aprobar</button>}
-                          <button onClick={() => eliminarAusencia(a.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️</button>
+                          {!a.aprobado_rrhh && <button onClick={() => aprobarAusencia(a.id)} className="btn-sm btn-sm-green">✅ Aprobar</button>}
+                          <button onClick={() => eliminarAusencia(a.id)} className="btn-sm btn-sm-red">🗑️</button>
                         </div>
                       </td>
                     </tr>
@@ -1435,11 +1582,13 @@ export function Admin() {
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Autorización de Horas Extra</h3>
           {horasExtraPendientes.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay horas extra pendientes de autorización</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Entrada</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Salida</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra (min)</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
                 </tr>
@@ -1451,9 +1600,31 @@ export function Admin() {
                     <tr key={h.id} style={{ borderBottom: '1px solid #1e293b' }}>
                       <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
                       <td style={{ padding: '0.75rem' }}>{h.fecha_turno}</td>
-                      <td style={{ padding: '0.75rem' }}>{h.minutos_extra_calculados} min</td>
+                      <td style={{ padding: '0.75rem' }}>{h.hora_entrada_real ? new Date(h.hora_entrada_real).toLocaleString() : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{h.hora_salida_real ? new Date(h.hora_salida_real).toLocaleString() : '-'}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        <button onClick={() => autorizarHorasExtra(h.id)} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Autorizar</button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span>{h.minutos_extra_calculados} min</span>
+                          <input 
+                            type="number" 
+                            defaultValue={h.minutos_extra_calculados}
+                            style={{ width: '60px', padding: '0.25rem', background: '#1e293b', border: '1px solid #334155', borderRadius: '0.25rem', color: '#fff' }}
+                            onBlur={(e) => modificarHorasExtra(h.id, parseInt(e.target.value))}
+                          />
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                          {!h.autorizacion_horas_extra_rrhh && (
+                            <button onClick={() => autorizarHorasExtra(h.id)} className="btn-sm btn-sm-green">✅ Autorizar RRHH</button>
+                          )}
+                          {h.autorizacion_horas_extra_rrhh && (
+                            <button onClick={() => revocarAutorizacionRRHH(h.id)} className="btn-sm btn-sm-red">❌ Revocar RRHH</button>
+                          )}
+                          {h.validacion_supervisor && (
+                            <button onClick={() => revocarValidacionSupervisor(h.id)} className="btn-sm btn-sm-yellow">🔄 Revocar Supervisor</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1466,11 +1637,13 @@ export function Admin() {
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Visitas (Entradas Fuera de Horario)</h3>
           {visitas.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay visitas registradas</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha Visita</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Inicio</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Fin</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Duración (min)</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Autorizado Por</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Motivo</th>
@@ -1483,7 +1656,19 @@ export function Admin() {
                   return (
                     <tr key={v.id} style={{ borderBottom: '1px solid #1e293b' }}>
                       <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
-                      <td style={{ padding: '0.75rem' }}>{new Date(v.fecha_visita).toLocaleString()}</td>
+                      <td style={{ padding: '0.75rem' }}>{v.hora_inicio ? new Date(v.hora_inicio).toLocaleString() : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>{v.hora_fin ? new Date(v.hora_fin).toLocaleString() : '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span>{v.minutos_duracion || 0} min</span>
+                          <input 
+                            type="number" 
+                            defaultValue={v.minutos_duracion || 0}
+                            style={{ width: '60px', padding: '0.25rem', background: '#1e293b', border: '1px solid #334155', borderRadius: '0.25rem', color: '#fff' }}
+                            onBlur={(e) => actualizarDuracionVisita(v.id, parseInt(e.target.value))}
+                          />
+                        </div>
+                      </td>
                       <td style={{ padding: '0.75rem' }}>
                         <span style={{
                           padding: '0.25rem 0.5rem',
@@ -1504,8 +1689,8 @@ export function Admin() {
                         <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
                           {v.estado === 'Pendiente' && (
                             <>
-                              <button onClick={() => actualizarVisita(v.id, 'Pagada', 'Visita autorizada como pagada')} style={{ padding: '0.5rem 1rem', background: '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✅ Pagada</button>
-                              <button onClick={() => actualizarVisita(v.id, 'No_Pagada', 'Visita autorizada como no pagada')} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>❌ No Pagada</button>
+                              <button onClick={() => actualizarVisita(v.id, 'Pagada', 'Visita autorizada como pagada')} className="btn-sm btn-sm-green">✅ Pagada</button>
+                              <button onClick={() => actualizarVisita(v.id, 'No_Pagada', 'Visita autorizada como no pagada')} className="btn-sm btn-sm-red">❌ No Pagada</button>
                             </>
                           )}
                         </div>
@@ -1573,7 +1758,14 @@ export function Admin() {
           <input className="input" type="password" placeholder="Contraseña" value={usuarioForm.password} onChange={(e) => setUsuarioForm({ ...usuarioForm, password: e.target.value })} required={!editandoUsuario} />
           <select className="input" value={usuarioForm.rol_id} onChange={(e) => setUsuarioForm({ ...usuarioForm, rol_id: e.target.value })} required>
             <option value="">Seleccionar rol</option>
-            {roles.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+            {roles.filter(r => {
+              // Filtrar roles según jerarquía: superusuario > admin > rrhh > supervisor
+              if (rolUsuario === 'Superusuario') return true
+              if (rolUsuario === 'Administrador') return r.nombre !== 'Superusuario'
+              if (rolUsuario === 'RRHH') return r.nombre !== 'Superusuario' && r.nombre !== 'Administrador' && r.nombre !== 'RRHH'
+              if (rolUsuario === 'Supervisor') return false
+              return false
+            }).map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
           </select>
           <select className="input" value={usuarioForm.empleado_id} onChange={(e) => setUsuarioForm({ ...usuarioForm, empleado_id: e.target.value })}>
             <option value="">Sin empleado asociado</option>
@@ -1596,9 +1788,9 @@ export function Admin() {
                     </p>
                   </div>
                   <div style={{ display: 'flex', gap: '0.25rem' }}>
-                    <button onClick={() => iniciarEdicionUsuario(u)} style={{ padding: '0.5rem 1rem', background: '#3b82f6', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>✏️ Editar</button>
-                    <button onClick={() => toggleActivoUsuario(u.id, u.activo)} style={{ padding: '0.5rem 1rem', background: u.activo ? '#eab308' : '#059669', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>{u.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
-                    <button onClick={() => eliminarUsuario(u.id)} style={{ padding: '0.5rem 1rem', background: '#dc2626', border: 'none', borderRadius: '0.25rem', color: '#fff', cursor: 'pointer', fontSize: '0.875rem' }}>🗑️ Eliminar</button>
+                    <button onClick={() => iniciarEdicionUsuario(u)} className="btn-sm btn-sm-blue">✏️ Editar</button>
+                    <button onClick={() => toggleActivoUsuario(u.id, u.activo)} className={`btn-sm ${u.activo ? 'btn-sm-yellow' : 'btn-sm-green'}`}>{u.activo ? '🔒 Desactivar' : '✅ Activar'}</button>
+                    <button onClick={() => eliminarUsuario(u.id)} className="btn-sm btn-sm-red">🗑️ Eliminar</button>
                   </div>
                 </div>
               ))}
@@ -1670,7 +1862,7 @@ export function Admin() {
             <button 
               type="button" 
               onClick={() => exportarExcel('horas-laboradas')}
-              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+              className="btn-green"
             >
               📥 Exportar Excel
             </button>
@@ -1678,7 +1870,7 @@ export function Admin() {
 
           {reporteHoras.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteHoras.length} registros</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
@@ -1729,7 +1921,7 @@ export function Admin() {
             <button 
               type="button" 
               onClick={() => exportarExcel('horas-extra')}
-              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+              className="btn-green"
             >
               📥 Exportar Excel
             </button>
@@ -1737,7 +1929,7 @@ export function Admin() {
 
           {reporteHorasExtra.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteHorasExtra.length} registros</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
@@ -1782,7 +1974,7 @@ export function Admin() {
 
           {reporteSalidasTemporales.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteSalidasTemporales.length} registros</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
@@ -1834,7 +2026,7 @@ export function Admin() {
             <button 
               type="button" 
               onClick={() => exportarExcel('asistencias')}
-              style={{ padding: '0.75rem 1.5rem', background: '#10b981', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}
+              className="btn-green"
             >
               📥 Exportar Excel
             </button>
@@ -1842,7 +2034,7 @@ export function Admin() {
 
           {reporteAsistencias.length > 0 && <div className="panel" style={{ padding: '1rem' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Resultados: {reporteAsistencias.length} registros</h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+            <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>

@@ -169,12 +169,18 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
         hora_salida_oficial = datetime.combine(
             fecha_turno,
             turno["hora_salida_oficial"],
-            tzinfo=now.tzinfo
-        )
+            )
+        # Asegurar que hora_salida_oficial tenga timezone
+        if hora_salida_oficial.tzinfo is None:
+            hora_salida_oficial = hora_salida_oficial.replace(tzinfo=now.tzinfo)
 
     # Calcular minutos descontados según tipo de salida
     if salida.tipo_salida == TipoSalida.PERMISO_PERSONAL:
-        salida.minutos_descontados = int((now - salida.hora_salida).total_seconds() / 60)
+        # Asegurar que salida.hora_salida tenga timezone
+        hora_salida_con_tz = salida.hora_salida
+        if hora_salida_con_tz.tzinfo is None:
+            hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
+        salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
     else:
         salida.minutos_descontados = 0
 
@@ -283,12 +289,18 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         hora_salida_oficial = datetime.combine(
             fecha_turno,
             turno["hora_salida_oficial"],
-            tzinfo=now.tzinfo
-        )
+            )
+        # Asegurar que hora_salida_oficial tenga timezone
+        if hora_salida_oficial.tzinfo is None:
+            hora_salida_oficial = hora_salida_oficial.replace(tzinfo=now.tzinfo)
 
     # Calcular minutos descontados según tipo de salida
     if salida.tipo_salida == TipoSalida.PERMISO_PERSONAL:
-        salida.minutos_descontados = int((now - salida.hora_salida).total_seconds() / 60)
+        # Asegurar que salida.hora_salida tenga timezone
+        hora_salida_con_tz = salida.hora_salida
+        if hora_salida_con_tz.tzinfo is None:
+            hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
+        salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
     else:
         salida.minutos_descontados = 0
 
@@ -377,6 +389,10 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asistencia del día no encontrada")
 
     asistencia.hora_salida_real = now
+    
+    # Asegurar que fecha_turno esté definida
+    if not asistencia.fecha_turno:
+        asistencia.fecha_turno = now.date()
     
     # Calcular bloques de horas extra si hay turno definido
     turno = get_empleado_turno(db, empleado, now.weekday())
@@ -777,6 +793,19 @@ def actualizar_visita(visita_id: int, request: VisitaUpdate, db: Session = Depen
     if request.estado in [EstadoVisita.PAGADA, EstadoVisita.NO_PAGADA]:
         visita.fecha_autorizacion = utc_now()
     
+    db.commit()
+    db.refresh(visita)
+    return visita
+
+
+@router.put("/visitas/{visita_id}/duracion", response_model=VisitaOut)
+def actualizar_duracion_visita(visita_id: int, minutos: int, db: Session = Depends(get_db)):
+    """Actualiza la duración de una visita (solo RRHH)"""
+    visita = db.get(Visita, visita_id)
+    if not visita:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visita no encontrada")
+    
+    visita.minutos_duracion = minutos
     db.commit()
     db.refresh(visita)
     return visita

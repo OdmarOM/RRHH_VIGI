@@ -8,10 +8,23 @@ from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, Estado
 
 def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
     """Crea una visita para una entrada fuera de horario."""
+    asistencia = db.get(RegistroAsistencia, asistencia_id)
+    now = utc_now()
+    
+    hora_inicio = asistencia.hora_entrada_real if asistencia else None
+    hora_fin = asistencia.hora_salida_real if asistencia else None
+    minutos_duracion = None
+    
+    if hora_inicio and hora_fin:
+        minutos_duracion = int((hora_fin - hora_inicio).total_seconds() / 60)
+    
     visita = Visita(
         empleado_id=empleado_id,
         asistencia_id=asistencia_id,
-        fecha_visita=utc_now(),
+        fecha_visita=now,
+        hora_inicio=hora_inicio,
+        hora_fin=hora_fin,
+        minutos_duracion=minutos_duracion,
         estado=EstadoVisita.PENDIENTE
     )
     db.add(visita)
@@ -32,6 +45,12 @@ def calcular_y_registrar_bloques_horas_extra(db: Session, asistencia: RegistroAs
         return
     
     now = utc_now()
+    # Asegurar que hora_entrada y hora_salida tengan timezone
+    if hora_entrada.tzinfo is None:
+        hora_entrada = hora_entrada.replace(tzinfo=now.tzinfo)
+    if hora_salida.tzinfo is None:
+        hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+    
     hora_entrada_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
     hora_salida_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
     
@@ -93,6 +112,7 @@ def verificar_ausencia_aprobada(db: Session, empleado_id: int, fecha: date) -> d
         return {
             "tipo_ausencia": ausencia.tipo_ausencia.value,
             "pagada": ausencia.pagada,
+            "porcentaje_aportacion": ausencia.porcentaje_aportacion,
             "motivo": ausencia.motivo
         }
     return None
@@ -126,27 +146,95 @@ def procesar_visitas_vencidas(db: Session):
 
 def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict:
     """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos.
-    Solo cuenta visitas pagadas y horas extra autorizadas por RRHH."""
+    Solo cuenta visitas pagadas y horas extra autorizadas por RRHH.
+    Considera ausencias (vacaciones/incapacidades/permisos) con su porcentaje de aportación."""
     now = utc_now()
     
-    # Verificar si hay ausencia aprobada (vacaciones/incapacidad)
+    # Verificar si hay ausencia aprobada (vacaciones/incapacidad/permiso)
     ausencia = verificar_ausencia_aprobada(db, empleado_id, fecha)
     if ausencia:
-        return {
-            "minutos_laborados": 0,
-            "minutos_extra": 0,
-            "minutos_descanso": 0,
-            "total_eventos": 0,
-            "eventos": [],
-            "ausencia": ausencia
-        }
+        # Si hay ausencia, calcular horas según tipo y porcentaje
+        # Vacaciones: siempre pagadas (100%)
+        # Incapacidades: según porcentaje_aportacion (0-100%)
+        # Permisos: según campo pagada (true/false)
+        
+        tipo_ausencia = ausencia["tipo_ausencia"]
+        pagada = ausencia["pagada"]
+        porcentaje = ausencia["porcentaje_aportacion"]
+        
+        if tipo_ausencia == "Vacaciones":
+            # Vacaciones siempre cuentan como horas laboradas al 100%
+            # Obtener turno para calcular horas del día
+            empleado = db.get(Empleado, empleado_id)
+            turno = get_empleado_turno(db, empleado, fecha.weekday())
+            if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+                hora_entrada = datetime.combine(fecha, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+                hora_salida = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+                minutos_laborados = int((hora_salida - hora_entrada).total_seconds() / 60)
+            else:
+                minutos_laborados = 0
+            
+            return {
+                "minutos_laborados": minutos_laborados,
+                "minutos_extra": 0,
+                "minutos_descanso": 0,
+                "total_eventos": 0,
+                "eventos": [],
+                "ausencia": ausencia
+            }
+        elif tipo_ausencia == "Incapacidad":
+            # Incapacidad: según porcentaje de aportación
+            empleado = db.get(Empleado, empleado_id)
+            turno = get_empleado_turno(db, empleado, fecha.weekday())
+            if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+                hora_entrada = datetime.combine(fecha, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+                hora_salida = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+                minutos_completos = int((hora_salida - hora_entrada).total_seconds() / 60)
+                minutos_laborados = int(minutos_completos * porcentaje / 100)
+            else:
+                minutos_laborados = 0
+            
+            return {
+                "minutos_laborados": minutos_laborados,
+                "minutos_extra": 0,
+                "minutos_descanso": 0,
+                "total_eventos": 0,
+                "eventos": [],
+                "ausencia": ausencia
+            }
+        elif tipo_ausencia == "Permiso":
+            # Permiso: según campo pagada
+            if pagada:
+                empleado = db.get(Empleado, empleado_id)
+                turno = get_empleado_turno(db, empleado, fecha.weekday())
+                if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+                    hora_entrada = datetime.combine(fecha, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+                    hora_salida = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+                    minutos_laborados = int((hora_salida - hora_entrada).total_seconds() / 60)
+                else:
+                    minutos_laborados = 0
+            else:
+                minutos_laborados = 0
+            
+            return {
+                "minutos_laborados": minutos_laborados,
+                "minutos_extra": 0,
+                "minutos_descanso": 0,
+                "total_eventos": 0,
+                "eventos": [],
+                "ausencia": ausencia
+            }
     
     # Obtener todos los eventos del empleado en la fecha
+    # Asegurar que las fechas de comparación tengan timezone
+    fecha_inicio = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=now.tzinfo)
+    fecha_fin = datetime.combine(fecha, datetime.max.time()).replace(tzinfo=now.tzinfo)
+    
     eventos = db.scalars(
         select(EventoAsistencia)
         .where(EventoAsistencia.empleado_id == empleado_id)
-        .where(EventoAsistencia.fecha_evento >= datetime.combine(fecha, datetime.min.time()))
-        .where(EventoAsistencia.fecha_evento <= datetime.combine(fecha, datetime.max.time()))
+        .where(EventoAsistencia.fecha_evento >= fecha_inicio)
+        .where(EventoAsistencia.fecha_evento <= fecha_fin)
         .order_by(EventoAsistencia.fecha_evento)
     ).all()
     
@@ -192,20 +280,37 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             hora_entrada_actual = evento.fecha_evento
         elif evento.tipo_evento == TipoEvento.SALIDA and hora_entrada_actual:
             # Calcular minutos entre entrada y salida
-            minutos = int((evento.fecha_evento - hora_entrada_actual).total_seconds() / 60)
+            # Asegurar que ambos tengan timezone
+            hora_salida = evento.fecha_evento
+            if hora_salida.tzinfo is None:
+                hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+            if hora_entrada_actual.tzinfo is None:
+                hora_entrada_actual = hora_entrada_actual.replace(tzinfo=now.tzinfo)
+            minutos = int((hora_salida - hora_entrada_actual).total_seconds() / 60)
             minutos_laborados += minutos
             hora_entrada_actual = None
         elif evento.tipo_evento == TipoEvento.SALIDA_TEMPORAL and hora_entrada_actual:
             # Guardar la hora de salida temporal para calcular tiempo de descanso
             hora_salida_temporal = evento.fecha_evento
             # Sumar minutos laborados hasta la salida temporal
-            minutos = int((evento.fecha_evento - hora_entrada_actual).total_seconds() / 60)
+            # Asegurar que ambos tengan timezone
+            if hora_salida_temporal.tzinfo is None:
+                hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
+            if hora_entrada_actual.tzinfo is None:
+                hora_entrada_actual = hora_entrada_actual.replace(tzinfo=now.tzinfo)
+            minutos = int((hora_salida_temporal - hora_entrada_actual).total_seconds() / 60)
             minutos_laborados += minutos
             hora_entrada_actual = None
         elif evento.tipo_evento == TipoEvento.REGRESO_SALIDA_TEMPORAL:
             # Calcular minutos de descanso durante la salida temporal
             if hora_salida_temporal:
-                minutos_descanso = int((evento.fecha_evento - hora_salida_temporal).total_seconds() / 60)
+                # Asegurar que ambos tengan timezone
+                hora_regreso = evento.fecha_evento
+                if hora_regreso.tzinfo is None:
+                    hora_regreso = hora_regreso.replace(tzinfo=now.tzinfo)
+                if hora_salida_temporal.tzinfo is None:
+                    hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
+                minutos_descanso = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
                 hora_salida_temporal = None
             # Reanudar conteo desde el regreso
             hora_entrada_actual = evento.fecha_evento
@@ -219,10 +324,16 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         # Si hay eventos de salida después del horario oficial, calcular minutos extra
         # Solo si están autorizados por RRHH
         for evento in eventos:
-            if evento.tipo_evento == TipoEvento.SALIDA and evento.fecha_evento > hora_salida_oficial:
-                # Verificar si la asistencia tiene autorización de horas extra
-                if evento.asistencia and evento.asistencia.autorizacion_horas_extra_rrhh:
-                    minutos_extra += int((evento.fecha_evento - hora_salida_oficial).total_seconds() / 60)
+            if evento.tipo_evento == TipoEvento.SALIDA:
+                # Asegurar que evento.fecha_evento tenga timezone para comparación
+                hora_salida_evento = evento.fecha_evento
+                if hora_salida_evento.tzinfo is None:
+                    hora_salida_evento = hora_salida_evento.replace(tzinfo=now.tzinfo)
+                
+                if hora_salida_evento > hora_salida_oficial:
+                    # Verificar si la asistencia tiene autorización de horas extra
+                    if evento.asistencia and evento.asistencia.autorizacion_horas_extra_rrhh:
+                        minutos_extra += int((hora_salida_evento - hora_salida_oficial).total_seconds() / 60)
     
     return {
         "minutos_laborados": minutos_laborados,
@@ -372,6 +483,8 @@ def get_employee_info(db: Session, gafete: str) -> dict:
                 "tipo": ausencia.tipo_ausencia.value,
                 "fecha_inicio": ausencia.fecha_inicio.isoformat(),
                 "fecha_fin": ausencia.fecha_fin.isoformat(),
+                "pagada": ausencia.pagada,
+                "porcentaje_aportacion": ausencia.porcentaje_aportacion,
                 "motivo": ausencia.motivo
             }
             for ausencia in ausencias

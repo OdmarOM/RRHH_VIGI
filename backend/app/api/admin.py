@@ -114,13 +114,21 @@ def listar_turnos_raw(db: Session = Depends(get_db)):
 
 @router.put("/turnos/{id}", response_model=TurnoOut, dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
 def actualizar_turno(id: int, payload: TurnoUpdate, db: Session = Depends(get_db)):
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Actualizando turno {id} con payload: {payload.model_dump(exclude_unset=True)}")
+    
     turno = db.get(TurnoHorario, id)
     if not turno:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Turno no encontrado")
+    
     for key, value in payload.model_dump(exclude_unset=True).items():
+        logger.info(f"Actualizando campo {key} con valor {value}")
         setattr(turno, key, value)
+    
     db.commit()
     db.refresh(turno)
+    logger.info(f"Turno actualizado: entrada={turno.hora_entrada_oficial}, salida={turno.hora_salida_oficial}")
     return turno
 
 
@@ -283,13 +291,15 @@ def crear_usuario_sistema(username: str, password: str, rol_id: int, empleado_id
     if not rol:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rol no encontrado")
 
-    # Validar restricciones de jerarquía
+    # Validar restricciones de jerarquía: superusuario > admin > rrhh > supervisor
     if rol.nombre == RolNombre.SUPERUSUARIO and current_user.rol.nombre != RolNombre.SUPERUSUARIO:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario puede crear superusuarios")
     if rol.nombre == RolNombre.ADMINISTRADOR and current_user.rol.nombre != RolNombre.SUPERUSUARIO:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario puede crear administradores")
-    if rol.nombre == RolNombre.SUPERVISOR and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.RRHH]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo RRHH o superusuario pueden crear supervisores")
+    if rol.nombre == RolNombre.RRHH and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.ADMINISTRADOR]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario o administrador pueden crear usuarios RRHH")
+    if rol.nombre == RolNombre.SUPERVISOR and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.ADMINISTRADOR, RolNombre.RRHH]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo RRHH, administrador o superusuario pueden crear supervisores")
 
     if empleado_id:
         empleado = db.get(Empleado, empleado_id)
@@ -322,13 +332,15 @@ def actualizar_usuario_sistema(usuario_id: int, username: str | None = None, rol
         if not rol:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rol no encontrado")
 
-        # Validar restricciones de jerarquía
+        # Validar restricciones de jerarquía: superusuario > admin > rrhh > supervisor
         if rol.nombre == RolNombre.SUPERUSUARIO and current_user.rol.nombre != RolNombre.SUPERUSUARIO:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario puede asignar rol de superusuario")
         if rol.nombre == RolNombre.ADMINISTRADOR and current_user.rol.nombre != RolNombre.SUPERUSUARIO:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario puede asignar rol de administrador")
-        if rol.nombre == RolNombre.SUPERVISOR and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.RRHH]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo RRHH o superusuario pueden asignar rol de supervisor")
+        if rol.nombre == RolNombre.RRHH and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.ADMINISTRADOR]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo el superusuario o administrador pueden asignar rol RRHH")
+        if rol.nombre == RolNombre.SUPERVISOR and current_user.rol.nombre not in [RolNombre.SUPERUSUARIO, RolNombre.ADMINISTRADOR, RolNombre.RRHH]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo RRHH, administrador o superusuario pueden asignar rol de supervisor")
 
         usuario.rol_id = rol_id
     if empleado_id is not None:
@@ -477,18 +489,34 @@ def romper_plantilla_empleado(empleado_id: int, db: Session = Depends(get_db)):
     if not plantilla:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plantilla no encontrada")
     
-    # Crear turnos individuales basados en la plantilla actual
+    # Crear o actualizar turnos individuales basados en la plantilla actual
     detalles = db.scalars(select(DetallePlantillaTurno).where(DetallePlantillaTurno.plantilla_id == plantilla.id)).all()
     for detalle in detalles:
         if not detalle.es_descanso and detalle.hora_entrada_oficial and detalle.hora_salida_oficial:
-            nuevo_turno = TurnoHorario(
-                empleado_id=empleado_id,
-                dia_semana=detalle.dia_semana,
-                hora_entrada_oficial=detalle.hora_entrada_oficial,
-                hora_salida_oficial=detalle.hora_salida_oficial,
-                tolerancia_minutos=detalle.tolerancia_minutos
+            # Verificar si ya existe un turno para este empleado en este día
+            turno_existente = db.scalar(
+                select(TurnoHorario).where(
+                    TurnoHorario.empleado_id == empleado_id,
+                    TurnoHorario.dia_semana == detalle.dia_semana
+                )
             )
-            db.add(nuevo_turno)
+            if turno_existente:
+                # Actualizar turno existente
+                turno_existente.hora_entrada_oficial = detalle.hora_entrada_oficial
+                turno_existente.hora_salida_oficial = detalle.hora_salida_oficial
+                turno_existente.tolerancia_minutos = detalle.tolerancia_minutos
+                turno_existente.es_descanso = False
+            else:
+                # Crear nuevo turno
+                nuevo_turno = TurnoHorario(
+                    empleado_id=empleado_id,
+                    dia_semana=detalle.dia_semana,
+                    hora_entrada_oficial=detalle.hora_entrada_oficial,
+                    hora_salida_oficial=detalle.hora_salida_oficial,
+                    tolerancia_minutos=detalle.tolerancia_minutos,
+                    es_descanso=False
+                )
+                db.add(nuevo_turno)
     
     # Romper la referencia a la plantilla
     empleado.plantilla_turno_id = None
@@ -509,6 +537,42 @@ def autorizar_horas_extra(asistencia_id: int, db: Session = Depends(get_db)):
     asistencia.autorizacion_horas_extra_rrhh = True
     db.commit()
     return {"ok": True, "minutos_extra": asistencia.minutos_extra_calculados}
+
+
+@router.put("/asistencias/{asistencia_id}/revocar-autorizacion-rrhh", dependencies=[ADMIN_ACCESS])
+def revocar_autorizacion_horas_extra_rrhh(asistencia_id: int, db: Session = Depends(get_db)):
+    """Revoca la autorización de horas extra por parte de RRHH"""
+    asistencia = db.get(RegistroAsistencia, asistencia_id)
+    if not asistencia:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de asistencia no encontrado")
+    
+    asistencia.autorizacion_horas_extra_rrhh = False
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/asistencias/{asistencia_id}/revocar-validacion-supervisor", dependencies=[ADMIN_ACCESS])
+def revocar_validacion_supervisor(asistencia_id: int, db: Session = Depends(get_db)):
+    """Revoca la validación de supervisor"""
+    asistencia = db.get(RegistroAsistencia, asistencia_id)
+    if not asistencia:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de asistencia no encontrado")
+    
+    asistencia.validacion_supervisor = False
+    db.commit()
+    return {"ok": True}
+
+
+@router.put("/asistencias/{asistencia_id}/modificar-horas-extra", dependencies=[ADMIN_ACCESS])
+def modificar_horas_extra(asistencia_id: int, minutos: int, db: Session = Depends(get_db)):
+    """Modifica la cantidad de minutos extra calculados"""
+    asistencia = db.get(RegistroAsistencia, asistencia_id)
+    if not asistencia:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro de asistencia no encontrado")
+    
+    asistencia.minutos_extra_calculados = minutos
+    db.commit()
+    return {"ok": True, "minutos_extra": minutos}
 
 
 @router.get("/bloques-horas-extra", dependencies=[ADMIN_ACCESS])
@@ -633,6 +697,7 @@ def crear_ausencia(payload: AusenciaCreate, db: Session = Depends(get_db)):
         fecha_inicio=payload.fecha_inicio,
         fecha_fin=payload.fecha_fin,
         pagada=payload.pagada,
+        porcentaje_aportacion=payload.porcentaje_aportacion,
         motivo=payload.motivo,
         fecha_registro=utc_now()
     )
@@ -673,6 +738,7 @@ def reporte_horas_laboradas(
     db: Session = Depends(get_db)
 ):
     from datetime import datetime, timedelta
+    from app.services import verificar_ausencia_aprobada
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
     
@@ -701,13 +767,25 @@ def reporte_horas_laboradas(
     for reg in registros:
         if reg.hora_entrada_real and reg.hora_salida_real:
             horas = (reg.hora_salida_real - reg.hora_entrada_real).total_seconds() / 3600
+            
+            # Verificar si hay ausencia aprobada en esa fecha
+            ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
+            estado_ausencia = None
+            if ausencia:
+                estado_ausencia = {
+                    "tipo": ausencia["tipo_ausencia"],
+                    "pagada": ausencia["pagada"],
+                    "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
+                }
+            
             reporte.append({
                 "empleado_id": reg.empleado_id,
                 "fecha": reg.fecha_turno.isoformat(),
                 "hora_entrada": reg.hora_entrada_real.isoformat(),
                 "hora_salida": reg.hora_salida_real.isoformat(),
                 "horas_laboradas": round(horas, 2),
-                "estado": reg.estado_registro
+                "estado": reg.estado_registro,
+                "estado_ausencia": estado_ausencia
             })
     
     return reporte
@@ -951,8 +1029,8 @@ def exportar_horas_laboradas_excel(
         dias_en_rango.append(fecha_actual)
         fecha_actual += timedelta(days=1)
 
-    # Nombres de días en español
-    dias_semana = ['LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', 'DOMINGO']
+    # Nombres de días en español (sin acentos para compatibilidad Excel)
+    dias_semana = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -963,7 +1041,9 @@ def exportar_horas_laboradas_excel(
         if not dept_empleados:
             continue
 
-        ws = wb.create_sheet(title=dept.nombre[:31])
+        # Limpiar nombre de hoja: remover caracteres especiales y limitar longitud
+        nombre_hoja = dept.nombre[:31].replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
+        ws = wb.create_sheet(title=nombre_hoja)
 
         # Header con días
         headers = ['Número', 'Colaborador'] + [f"{d.strftime('%d/%m')} ({dias_semana[d.weekday()]})" for d in dias_en_rango] + ['TOTAL']
@@ -1064,7 +1144,7 @@ def exportar_horas_extra_excel(
         dias_en_rango.append(fecha_actual)
         fecha_actual += timedelta(days=1)
 
-    dias_semana = ['LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', 'DOMINGO']
+    dias_semana = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -1074,7 +1154,9 @@ def exportar_horas_extra_excel(
         if not dept_empleados:
             continue
 
-        ws = wb.create_sheet(title=dept.nombre[:31])
+        # Limpiar nombre de hoja: remover caracteres especiales y limitar longitud
+        nombre_hoja = dept.nombre[:31].replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
+        ws = wb.create_sheet(title=nombre_hoja)
 
         headers = ['Número', 'Colaborador'] + [f"{d.strftime('%d/%m')} ({dias_semana[d.weekday()]})" for d in dias_en_rango] + ['TOTAL']
         ws.append(headers)
@@ -1163,7 +1245,7 @@ def exportar_asistencias_excel(
         dias_en_rango.append(fecha_actual)
         fecha_actual += timedelta(days=1)
 
-    dias_semana = ['LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', 'DOMINGO']
+    dias_semana = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -1173,7 +1255,9 @@ def exportar_asistencias_excel(
         if not dept_empleados:
             continue
 
-        ws = wb.create_sheet(title=dept.nombre[:31])
+        # Limpiar nombre de hoja: remover caracteres especiales y limitar longitud
+        nombre_hoja = dept.nombre[:31].replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
+        ws = wb.create_sheet(title=nombre_hoja)
 
         headers = ['Número', 'Colaborador'] + [f"{d.strftime('%d/%m')} ({dias_semana[d.weekday()]})" for d in dias_en_rango] + ['TOTAL']
         ws.append(headers)
@@ -1190,10 +1274,10 @@ def exportar_asistencias_excel(
             for fecha in dias_en_rango:
                 reg = next((r for r in registros if r.empleado_id == emp.id and r.fecha_turno == fecha), None)
                 if reg and reg.hora_entrada_real:
-                    fila.append('✅')
+                    fila.append('SI')
                     total_asistencias += 1
                 else:
-                    fila.append('❌')
+                    fila.append('NO')
 
             fila.append(total_asistencias)
             ws.append(fila)

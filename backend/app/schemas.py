@@ -98,6 +98,9 @@ class TurnoCreate(BaseModel):
     hora_entrada_oficial: time | None = None
     hora_salida_oficial: time | None = None
     tolerancia_minutos: int = 15
+    tolerancia_entrada_previa_minutos: int = 15
+    tolerancia_salida_posterior_minutos: int = 15
+    tolerancia_salida_previa_minutos: int = 5
     es_descanso: bool = False
     es_por_asistencia: bool = False
 
@@ -119,6 +122,9 @@ class TurnoUpdate(BaseModel):
     hora_entrada_oficial: time | None = None
     hora_salida_oficial: time | None = None
     tolerancia_minutos: int | None = None
+    tolerancia_entrada_previa_minutos: int | None = None
+    tolerancia_salida_posterior_minutos: int | None = None
+    tolerancia_salida_previa_minutos: int | None = None
     es_descanso: bool | None = None
     es_por_asistencia: bool | None = None
 
@@ -216,6 +222,7 @@ class AusenciaCreate(BaseModel):
     fecha_inicio: date
     fecha_fin: date
     pagada: bool = True
+    porcentaje_aportacion: int = 100  # Para incapacidades (0-100)
     motivo: str | None = None
 
 
@@ -227,6 +234,7 @@ class AusenciaOut(BaseModel):
     fecha_inicio: date
     fecha_fin: date
     pagada: bool
+    porcentaje_aportacion: int
     motivo: str | None
     aprobado_rrhh: bool
     fecha_registro: datetime
@@ -249,6 +257,9 @@ class VisitaOut(BaseModel):
     empleado_id: int
     asistencia_id: int
     fecha_visita: datetime
+    hora_inicio: datetime | None
+    hora_fin: datetime | None
+    minutos_duracion: int | None
     estado: EstadoVisita
     autorizado_por: int | None
     fecha_autorizacion: datetime | None

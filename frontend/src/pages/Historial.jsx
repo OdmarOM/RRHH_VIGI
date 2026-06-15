@@ -75,35 +75,9 @@ export function Historial() {
       </div>
 
       <section className="panel" style={{ padding: '1.5rem', display: 'grid', gap: '1rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button 
-            onClick={() => setTab('colaboradores')}
-            style={{ 
-              padding: '0.75rem 1.5rem', 
-              background: tab === 'colaboradores' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : '#1e293b', 
-              border: 'none', 
-              borderRadius: '0.5rem', 
-              color: '#fff', 
-              cursor: 'pointer', 
-              fontWeight: 700 
-            }}
-          >
-            👥 Colaboradores
-          </button>
-          <button 
-            onClick={() => setTab('externos')}
-            style={{ 
-              padding: '0.75rem 1.5rem', 
-              background: tab === 'externos' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : '#1e293b', 
-              border: 'none', 
-              borderRadius: '0.5rem', 
-              color: '#fff', 
-              cursor: 'pointer', 
-              fontWeight: 700 
-            }}
-          >
-            🚚 Externos
-          </button>
+        <div className="tabs">
+          <button className={`tab${tab === 'colaboradores' ? ' active' : ''}`} onClick={() => setTab('colaboradores')}>👥 Colaboradores</button>
+          <button className={`tab${tab === 'externos' ? ' active' : ''}`} onClick={() => setTab('externos')}>🚚 Externos</button>
         </div>
 
         <h2 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>Filtros</h2>
@@ -143,7 +117,7 @@ export function Historial() {
           <button className="btn" onClick={aplicarFiltros} disabled={loading}>
             {loading ? 'Cargando...' : '🔍 Filtrar'}
           </button>
-          <button onClick={limpiarFiltros} style={{ padding: '0.75rem 1.5rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>
+          <button onClick={limpiarFiltros} className="btn-sm btn-sm-gray" style={{ fontSize: '1rem', padding: '0.7rem 1.25rem' }}>
             🗑️ Limpiar
           </button>
         </div>
