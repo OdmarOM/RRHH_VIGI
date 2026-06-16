@@ -847,9 +847,9 @@ export function Admin() {
               <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>{e.puesto} • Depto: {departamentos.find(d => d.id === e.departamento_id)?.nombre || 'Sin departamento'}</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: e.estado_actual === 'Adentro' ? 'rgba(5,150,105,0.1)' : e.estado_actual === 'Fuera' ? 'rgba(100,116,139,0.1)' : 'rgba(234,179,8,0.1)', padding: '0.5rem 1rem', borderRadius: '0.75rem' }}>
-                <span style={{ fontSize: '1.25rem' }}>{e.estado_actual === 'Adentro' ? '✅' : e.estado_actual === 'Fuera' ? '🚪' : '⏳'}</span>
-                <span style={{ fontWeight: 700, color: e.estado_actual === 'Adentro' ? '#059669' : e.estado_actual === 'Fuera' ? '#64748b' : '#eab308' }}>{e.estado_actual}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: (e.estado_actual === 'Adentro' || e.estado_actual === 'Laborando') ? 'rgba(5,150,105,0.1)' : e.estado_actual === 'Fuera' ? 'rgba(100,116,139,0.1)' : 'rgba(234,179,8,0.1)', padding: '0.5rem 1rem', borderRadius: '0.75rem' }}>
+                <span style={{ fontSize: '1.25rem' }}>{(e.estado_actual === 'Adentro' || e.estado_actual === 'Laborando') ? '✅' : e.estado_actual === 'Fuera' ? '🚪' : '⏳'}</span>
+                <span style={{ fontWeight: 700, color: (e.estado_actual === 'Adentro' || e.estado_actual === 'Laborando') ? '#059669' : e.estado_actual === 'Fuera' ? '#64748b' : '#eab308' }}>{e.estado_actual}</span>
               </div>
               <div style={{ display: 'flex', gap: '0.25rem' }}>
                 <button onClick={() => iniciarEdicionEmpleado(e)} className="btn-sm btn-sm-blue">✏️ Editar</button>

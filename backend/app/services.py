@@ -3,27 +3,24 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.time import utc_now
-from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TurnoHorario, UsuarioSistema, Visita
+from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TipoSalida, TurnoHorario, UsuarioSistema, Visita
 
 
 def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
     """Crea una visita para una entrada fuera de horario."""
-    asistencia = db.get(RegistroAsistencia, asistencia_id)
     now = utc_now()
     
-    hora_inicio = asistencia.hora_entrada_real if asistencia else None
-    hora_fin = asistencia.hora_salida_real if asistencia else None
-    minutos_duracion = None
+    # Usar now como hora_inicio para evitar problemas de timezone
+    hora_inicio = now
     
-    if hora_inicio and hora_fin:
-        minutos_duracion = int((hora_fin - hora_inicio).total_seconds() / 60)
+    minutos_duracion = None
     
     visita = Visita(
         empleado_id=empleado_id,
         asistencia_id=asistencia_id,
         fecha_visita=now,
         hora_inicio=hora_inicio,
-        hora_fin=hora_fin,
+        hora_fin=None,
         minutos_duracion=minutos_duracion,
         estado=EstadoVisita.PENDIENTE
     )
@@ -251,6 +248,7 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
     minutos_descanso = 0
     hora_entrada_actual = None
     hora_salida_temporal = None
+    tipo_salida_temporal_actual = None
     eventos_detalle = []
     
     for evento in eventos:
@@ -292,6 +290,7 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         elif evento.tipo_evento == TipoEvento.SALIDA_TEMPORAL and hora_entrada_actual:
             # Guardar la hora de salida temporal para calcular tiempo de descanso
             hora_salida_temporal = evento.fecha_evento
+            tipo_salida_temporal_actual = evento.tipo_salida
             # Sumar minutos laborados hasta la salida temporal
             # Asegurar que ambos tengan timezone
             if hora_salida_temporal.tzinfo is None:
@@ -302,7 +301,7 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             minutos_laborados += minutos
             hora_entrada_actual = None
         elif evento.tipo_evento == TipoEvento.REGRESO_SALIDA_TEMPORAL:
-            # Calcular minutos de descanso durante la salida temporal
+            # Calcular minutos durante la salida temporal
             if hora_salida_temporal:
                 # Asegurar que ambos tengan timezone
                 hora_regreso = evento.fecha_evento
@@ -310,8 +309,14 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
                     hora_regreso = hora_regreso.replace(tzinfo=now.tzinfo)
                 if hora_salida_temporal.tzinfo is None:
                     hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
-                minutos_descanso = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
+                minutos_ausente = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
+                # Las salidas a Comer NO descuentan tiempo laborado: el tiempo se cuenta como trabajado
+                if tipo_salida_temporal_actual == TipoSalida.COMER.value:
+                    minutos_laborados += minutos_ausente
+                else:
+                    minutos_descanso = minutos_ausente
                 hora_salida_temporal = None
+                tipo_salida_temporal_actual = None
             # Reanudar conteo desde el regreso
             hora_entrada_actual = evento.fecha_evento
     
@@ -363,12 +368,6 @@ def get_or_create_today_asistencia(db: Session, empleado: Empleado) -> RegistroA
 def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
     """Obtiene el horario del empleado para un día específico.
     Primero busca en turnos individuales, si no tiene, busca en plantilla si está asignada."""
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    
-    logger.info(f"DEBUG - get_empleado_turno: empleado_id={empleado.id}, dia_semana={dia_semana}")
-    
     # Primero buscar turnos individuales
     turno_individual = db.scalar(
         select(TurnoHorario).where(
@@ -377,7 +376,6 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
         )
     )
     if turno_individual:
-        logger.info(f"DEBUG - Turno individual encontrado: es_descanso={turno_individual.es_descanso}, hora_entrada={turno_individual.hora_entrada_oficial}")
         return {
             "hora_entrada_oficial": turno_individual.hora_entrada_oficial,
             "hora_salida_oficial": turno_individual.hora_salida_oficial,
@@ -392,7 +390,6 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
     if empleado.plantilla_turno_id:
         plantilla = db.get(PlantillaTurno, empleado.plantilla_turno_id)
         if plantilla:
-            logger.info(f"DEBUG - Plantilla encontrada: {plantilla.nombre} (id={plantilla.id})")
             detalle = db.scalar(
                 select(DetallePlantillaTurno).where(
                     DetallePlantillaTurno.plantilla_id == plantilla.id,
@@ -400,7 +397,6 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
                 )
             )
             if detalle:
-                logger.info(f"DEBUG - Detalle plantilla encontrado: es_descanso={detalle.es_descanso}, hora_entrada={detalle.hora_entrada_oficial}")
                 return {
                     "hora_entrada_oficial": detalle.hora_entrada_oficial,
                     "hora_salida_oficial": detalle.hora_salida_oficial,
@@ -410,14 +406,7 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
                     "tolerancia_salida_previa_minutos": detalle.tolerancia_salida_previa_minutos,
                     "es_descanso": detalle.es_descanso
                 }
-            else:
-                logger.info(f"DEBUG - No se encontró detalle para dia_semana={dia_semana} en plantilla")
-        else:
-            logger.info(f"DEBUG - Plantilla no encontrada con id={empleado.plantilla_turno_id}")
-    else:
-        logger.info(f"DEBUG - Empleado no tiene plantilla_turno_id")
     
-    logger.info(f"DEBUG - No se encontró turno, retornando None")
     return None
 
 
@@ -444,7 +433,10 @@ def get_employee_info(db: Session, gafete: str) -> dict:
     fuera_horario = False
     if turno and not turno["es_descanso"] and turno["hora_entrada_oficial"]:
         limite_entrada = datetime.combine(now.date(), turno["hora_entrada_oficial"], tzinfo=now.tzinfo) + timedelta(minutes=turno["tolerancia_minutos"])
-        fuera_horario = now > limite_entrada
+        # No marcar fuera de horario si hay ausencias programadas (vacaciones, incapacidad)
+        # No marcar fuera de horario si ya tiene entrada registrada (pase aceptado)
+        if not ausencias and not asistencia.hora_entrada_real:
+            fuera_horario = now > limite_entrada
         horario_info = {
             "hora_entrada_oficial": turno["hora_entrada_oficial"].strftime("%H:%M") if turno["hora_entrada_oficial"] else None,
             "hora_salida_oficial": turno["hora_salida_oficial"].strftime("%H:%M") if turno["hora_salida_oficial"] else None,
@@ -517,8 +509,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones=f"Visita durante {ausencia_hoy['tipo_ausencia']}"
         ))
-        # Crear visita automáticamente
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
+        # La visita se puede crear manualmente por RRHH si es necesario
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
             tipo_observacion=f"Colaborador tiene {ausencia_hoy['tipo_ausencia']} aprobada. Entrada registrada como visita.",
@@ -564,8 +556,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita en día de descanso"
         ))
-        # Crear visita automáticamente
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -599,8 +590,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita después del fin del turno"
         ))
-        # Crear visita automáticamente
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -618,8 +608,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita antes de turno (dentro de tolerancia)"
         ))
-        # Crear visita automáticamente
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -673,8 +662,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita muy temprana (fuera de tolerancia)"
         ))
-        # Crear visita automáticamente
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -706,10 +694,6 @@ def supervisor_can_access(db: Session, user: UsuarioSistema, empleado: Empleado)
 
 
 def approve_late_pass(db: Session, user: UsuarioSistema, asistencia_id: int) -> RegistroAsistencia:
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
     asistencia = db.get(RegistroAsistencia, asistencia_id)
     if not asistencia:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asistencia no encontrada")
@@ -720,11 +704,6 @@ def approve_late_pass(db: Session, user: UsuarioSistema, asistencia_id: int) -> 
 
     # Manejar comparación de datetimes con/without timezone
     pase_expira = asistencia.pase_espera_expira
-    logger.info(f"DEBUG - Asistencia ID: {asistencia_id}")
-    logger.info(f"DEBUG - pase_espera_expira original: {pase_expira}")
-    logger.info(f"DEBUG - now original: {now}")
-    logger.info(f"DEBUG - pase_expira.tzinfo: {pase_expira.tzinfo if pase_expira else None}")
-    logger.info(f"DEBUG - now.tzinfo: {now.tzinfo}")
 
     if pase_expira:
         if pase_expira.tzinfo is None:
@@ -733,22 +712,16 @@ def approve_late_pass(db: Session, user: UsuarioSistema, asistencia_id: int) -> 
             # Asumir que la hora guardada es UTC-06:00
             local_tz = timezone(timedelta(hours=-6))
             pase_expira = pase_expira.replace(tzinfo=local_tz)
-            logger.info(f"DEBUG - pase_expira con timezone local: {pase_expira}")
         # Asegurar que now también tenga timezone
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
-            logger.info(f"DEBUG - now con timezone: {now}")
 
     # Verificar si el pase ha expirado (con margen de 1 minuto para evitar problemas de sincronización)
     from datetime import timedelta
     margen_expiracion = timedelta(minutes=1)
 
-    logger.info(f"DEBUG - Comparación: now={now}, pase_expira={pase_expira}, margen={margen_expiracion}")
-    logger.info(f"DEBUG - now > (pase_expira + margen): {now > (pase_expira + margen_expiracion) if pase_expira else 'N/A'}")
-
     if not pase_expira or now > (pase_expira + margen_expiracion):
         # Pase expirado: limpiar pase y marcar como FALTA
-        logger.info(f"DEBUG - Pase marcado como expirado")
         asistencia.pase_espera_expira = None
         asistencia.estado_registro = EstadoRegistro.FALTA
         empleado.estado_actual = EstadoEmpleado.FUERA
@@ -757,7 +730,6 @@ def approve_late_pass(db: Session, user: UsuarioSistema, asistencia_id: int) -> 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Pase expirado; marcado como falta")
     # Pase aprobado: no cambiar hora de entrada (ya fue registrada al llegar)
     # Cambiar estado del empleado a LABORANDO inmediatamente
-    logger.info(f"DEBUG - Pase aprobado exitosamente")
     asistencia.validacion_supervisor = True
     asistencia.estado_registro = EstadoRegistro.RETARDO_APROBADO
     asistencia.pase_espera_expira = None  # Limpiar el pase expirado

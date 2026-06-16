@@ -1,6 +1,6 @@
 from datetime import date, datetime, time
 from enum import StrEnum
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Time, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -291,6 +291,8 @@ class FilaExterno(Base):
     anden_asignado: Mapped[str | None] = mapped_column(String(40), nullable=True)
     hora_llegada: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     hora_salida: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latitud: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitud: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class EvidenciaFotografica(Base):
@@ -298,5 +300,6 @@ class EvidenciaFotografica(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     referencia_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    referencia_tipo: Mapped[str] = mapped_column(String(50), nullable=False)  # 'fila_externo' u otros
     ruta_archivo: Mapped[str] = mapped_column(String(255), nullable=False)
     fecha_captura: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -11,6 +11,7 @@ export function Historial() {
   const [empleadoId, setEmpleadoId] = useState('')
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState('colaboradores')
+  const [evidenciasExternos, setEvidenciasExternos] = useState({})
 
   useEffect(() => {
     cargarEmpleados()
@@ -47,6 +48,18 @@ export function Historial() {
       if (fechaFin) params.append('fecha_fin', fechaFin)
       const { data } = await api.get(`/caseta/historial-externos?${params.toString()}`)
       setHistorialExternos(data)
+      
+      // Cargar evidencias para cada externo
+      const evidencias = {}
+      for (const externo of data) {
+        try {
+          const { data: evData } = await api.get(`/caseta/fila-externos/${externo.id}/evidencias`)
+          if (evData.length > 0) {
+            evidencias[externo.id] = evData
+          }
+        } catch {}
+      }
+      setEvidenciasExternos(evidencias)
     } catch {}
   }
 
@@ -256,7 +269,36 @@ export function Historial() {
                 {e.anden_asignado && <div>
                   <span style={{ color: '#64748b' }}>📍 Andén:</span> {e.anden_asignado}
                 </div>}
+                {e.latitud && e.longitud && <div>
+                  <span style={{ color: '#64748b' }}>📍 Ubicación:</span> <a href={`https://maps.google.com/?q=${e.latitud},${e.longitud}`} target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6', textDecoration: 'none' }}>Ver en mapa</a>
+                </div>}
               </div>
+              {evidenciasExternos[e.id] && evidenciasExternos[e.id].length > 0 && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <p style={{ fontSize: '0.75rem', color: '#64748b', margin: '0 0 0.5rem 0' }}>📸 Evidencias fotográficas:</p>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {evidenciasExternos[e.id].map((ev) => (
+                      <a
+                        key={ev.id}
+                        href={`${api.defaults.baseURL}/caseta/fila-externos/${e.id}/evidencias/${ev.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: 'inline-block',
+                          padding: '0.25rem 0.5rem',
+                          background: 'rgba(59, 130, 246, 0.2)',
+                          borderRadius: '0.25rem',
+                          fontSize: '0.75rem',
+                          color: '#3b82f6',
+                          textDecoration: 'none'
+                        }}
+                      >
+                        📷 Foto {new Date(ev.fecha_captura).toLocaleString()}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>}

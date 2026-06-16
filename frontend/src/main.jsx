@@ -44,7 +44,7 @@ function Home() {
             api.get('/admin/empleados').catch(() => ({ data: [] })),
             api.get('/supervisor/incidencias').catch(() => ({ data: [] }))
           ])
-          const presentes = empData.data.filter(e => e.estado_actual === 'Adentro').length
+          const presentes = empData.data.filter(e => e.estado_actual === 'Laborando' || e.estado_actual === 'Adentro').length
           setMetrics({ empleados_presentes: presentes, incidencias: incData.data.length })
         } else {
           // Superusuario ve todo
@@ -53,7 +53,7 @@ function Home() {
             api.get('/supervisor/incidencias').catch(() => ({ data: [] })),
             api.get('/caseta/fila-externos').catch(() => ({ data: [] }))
           ])
-          const presentes = empData.data.filter(e => e.estado_actual === 'Adentro').length
+          const presentes = empData.data.filter(e => e.estado_actual === 'Laborando' || e.estado_actual === 'Adentro').length
           setMetrics({ empleados_presentes: presentes, incidencias: incData.data.length, fila_externa: filaData.data.length })
         }
       } catch {}

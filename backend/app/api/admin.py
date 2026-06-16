@@ -873,16 +873,8 @@ def reporte_asistencias(
         inicio = inicio_dt.date()
         fin = fin_dt.date()
     
-    # Buscar turnos por asistencia
-    query_turnos = select(TurnoHorario).where(
-        TurnoHorario.es_por_asistencia == True
-    )
-    
-    turnos_por_asistencia = db.scalars(query_turnos).all()
-    empleado_ids_por_asistencia = set(t.empleado_id for t in turnos_por_asistencia)
-    
-    # Filtrar empleados según parámetro
-    empleados_query = select(Empleado).where(Empleado.id.in_(empleado_ids_por_asistencia))
+    # Filtrar empleados según parámetro - incluir TODOS los empleados activos
+    empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
     
@@ -952,7 +944,12 @@ def reporte_asistencias(
                         "horas_extra": 0
                     })
                 else:
-                    # No hay ausencia ni asistencia - ausencia injustificada
+                    # No hay ausencia ni asistencia
+                    # Verificar si es día de descanso del empleado
+                    from app.services import get_empleado_turno
+                    turno_dia = get_empleado_turno(db, empleado, fecha_actual.weekday())
+                    es_dia_descanso = turno_dia is not None and turno_dia.get("es_descanso", False)
+
                     reporte.append({
                         "empleado_id": empleado.id,
                         "nombre_empleado": empleado.nombre_completo,
@@ -961,7 +958,7 @@ def reporte_asistencias(
                         "hora_entrada": None,
                         "hora_salida": None,
                         "estado_registro": None,
-                        "leyenda": "F",  # Falta injustificada
+                        "leyenda": "D" if es_dia_descanso else "F",  # D=Descanso, F=Falta injustificada
                         "horas_laboradas": 0,
                         "horas_extra": 0
                     })
@@ -1213,17 +1210,15 @@ def exportar_asistencias_excel(
     db: Session = Depends(get_db)
 ):
     from datetime import datetime, timedelta
+    from app.services import verificar_ausencia_aprobada
+    from app.models import TipoAusencia
     inicio = datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
     fin = datetime.strptime(fecha_fin, "%Y-%m-%d").date()
 
-    query_turnos = select(TurnoHorario).where(TurnoHorario.es_por_asistencia == True)
-    turnos_por_asistencia = db.scalars(query_turnos).all()
-    empleado_ids_por_asistencia = set(t.empleado_id for t in turnos_por_asistencia)
-
+    # Incluir TODOS los registros de asistencia
     query = select(RegistroAsistencia).where(
         RegistroAsistencia.fecha_turno >= inicio,
         RegistroAsistencia.fecha_turno <= fin,
-        RegistroAsistencia.empleado_id.in_(empleado_ids_por_asistencia),
         RegistroAsistencia.hora_entrada_real.is_not(None)
     )
 
@@ -1234,7 +1229,8 @@ def exportar_asistencias_excel(
 
     departamentos = db.scalars(select(Departamento)).all()
 
-    empleados_query = select(Empleado).where(Empleado.id.in_(empleado_ids_por_asistencia))
+    # Incluir TODOS los empleados activos
+    empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
     empleados = db.scalars(empleados_query).all()
@@ -1277,7 +1273,21 @@ def exportar_asistencias_excel(
                     fila.append('SI')
                     total_asistencias += 1
                 else:
-                    fila.append('NO')
+                    # Verificar si hay ausencia aprobada
+                    ausencia = verificar_ausencia_aprobada(db, emp.id, fecha)
+                    if ausencia:
+                        if ausencia["tipo_ausencia"] == TipoAusencia.VACACIONES.value:
+                            fila.append('V')  # Vacaciones
+                        elif ausencia["tipo_ausencia"] == TipoAusencia.INCAPACIDAD.value:
+                            fila.append('I')  # Incapacidad
+                        else:
+                            fila.append('A')  # Otro tipo de ausencia
+                    else:
+                        # Verificar si es día de descanso del empleado
+                        from app.services import get_empleado_turno
+                        turno_dia = get_empleado_turno(db, emp, fecha.weekday())
+                        es_dia_descanso = turno_dia is not None and turno_dia.get("es_descanso", False)
+                        fila.append('D' if es_dia_descanso else 'NO')  # D=Descanso, NO=Falta
 
             fila.append(total_asistencias)
             ws.append(fila)

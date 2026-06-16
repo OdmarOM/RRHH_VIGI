@@ -204,6 +204,56 @@ class TestHorasLaboradas:
         assert resultado["minutos_laborados"] == 420
         assert resultado["minutos_descanso"] == 60  # 1 hora de descanso
         print("[OK] Test calcular_horas_laboradas_con_salida_temporal: PASSED")
+    
+    def test_salida_comer_no_descuenta_tiempo(self):
+        """Verifica que las salidas a Comer NO descuentan tiempo laborado"""
+        fecha = FECHA_PRUEBA
+        
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        # Salida a comer (tipo_salida="Comer")
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(12, 0)).replace(tzinfo=now.tzinfo),
+            tipo_salida="Comer"
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(13, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        
+        # La hora de comida (12:00-13:00) SÍ cuenta como trabajada: 8h = 480 minutos
+        assert resultado["minutos_laborados"] == 480
+        assert resultado["minutos_descanso"] == 0  # Comer no se cuenta como descanso
+        print("[OK] Test salida_comer_no_descuenta_tiempo: PASSED")
 
 
 class TestHorasExtras:

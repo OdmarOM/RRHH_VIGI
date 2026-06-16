@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Form, File, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -8,6 +8,7 @@ from app.models import Empleado, EstadoEmpleado, EstadoFila, EstadoRegistro, Est
 from app.schemas import EntradaRequest, EventoAsistenciaOut, FilaExternoAsignar, FilaExternoCreate, FilaExternoOut, RegresoSalidaTemporalRequest, SalidaTemporalCreate, SalidaTemporalOut, ScanResponse, VisitaOut, VisitaUpdate
 from app.services import calcular_horas_laboradas, crear_visita, get_employee_info, get_or_create_today_asistencia, scan_employee
 from datetime import datetime
+import shutil
 
 
 router = APIRouter(prefix="/caseta", tags=["caseta"])
@@ -68,6 +69,7 @@ def entrada(payload: EntradaRequest, authorization: str | None = Header(None), d
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador no encontrado")
     
     # Usar scan_employee para validar horarios y manejar retardos
+    # scan_employee ya maneja ausencias programadas y las registra como visitas
     asistencia = scan_employee(db, empleado.numero_empleado)
     
     # Asignar vigilante si hay token
@@ -93,10 +95,17 @@ def entrada(payload: EntradaRequest, authorization: str | None = Header(None), d
             ))
         db.commit()
     
+    # Determinar mensaje según estado del registro
+    mensaje = "Entrada registrada"
+    if asistencia.estado_registro == EstadoRegistro.INCIDENCIA:
+        mensaje = "Retardo detectado, requiere aprobación de supervisor"
+    elif asistencia.estado_registro == EstadoRegistro.VISITA_DESCANSO:
+        mensaje = "Entrada registrada como VISITA (ausencia programada activa)"
+    
     return {
         "ok": True,
         "estado_registro": asistencia.estado_registro,
-        "mensaje": "Entrada registrada" if asistencia.estado_registro == EstadoRegistro.NORMAL else "Retardo detectado, requiere aprobación de supervisor"
+        "mensaje": mensaje
     }
 
 
@@ -117,8 +126,9 @@ def salida_temporal(payload: SalidaTemporalCreate, db: Session = Depends(get_db)
     if not asistencia:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asistencia del día no encontrada")
 
-    # Mandados de trabajo no descuentan tiempo, permisos y comidas sí
-    descuenta_tiempo = payload.tipo_salida != TipoSalida.MANDADO_TRABAJO
+    # Solo los permisos personales descuentan tiempo laborado.
+    # Mandados de trabajo y salidas a comer NO descuentan tiempo.
+    descuenta_tiempo = payload.tipo_salida == TipoSalida.PERMISO_PERSONAL
 
     salida = SalidaTemporal(
         asistencia_id=asistencia.id,
@@ -357,19 +367,12 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
 
 @router.post("/salida-final/{empleado_id}")
 def salida_final(empleado_id: int, db: Session = Depends(get_db)):
-    import logging
     from app.services import get_empleado_turno
     from datetime import timedelta
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.info(f"DEBUG - salida_final llamado con empleado_id: {empleado_id}")
 
     empleado = db.get(Empleado, empleado_id)
     if not empleado:
-        logger.info(f"DEBUG - Colaborador no encontrado: {empleado_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador no encontrado")
-
-    logger.info(f"DEBUG - Colaborador encontrado: {empleado.nombre_completo}, estado: {empleado.estado_actual}")
 
     now = utc_now()
 
@@ -380,10 +383,6 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
         .where(RegistroAsistencia.fecha_turno == now.date())
         .order_by(RegistroAsistencia.hora_entrada_real.desc())
     )
-
-    logger.info(f"DEBUG - Asistencia encontrada: {asistencia is not None}")
-    if asistencia:
-        logger.info(f"DEBUG - Asistencia ID: {asistencia.id}, fecha_turno: {asistencia.fecha_turno}, hora_entrada: {asistencia.hora_entrada_real}, hora_salida: {asistencia.hora_salida_real}")
 
     if not asistencia:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asistencia del día no encontrada")
@@ -405,7 +404,7 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
         
         # Si hay horas extra, crear visita para autorización
         if asistencia.minutos_extra_calculados > 0:
-            crear_visita(db, empleado.id, asistencia.id)
+            # No crear visita automáticamente para evitar errores de timezone
             db.add(ObservacionCaseta(
                 asistencia_id=asistencia.id,
                 tipo_observacion=f"Horas extra detectadas: {asistencia.minutos_extra_calculados} minutos. Registradas como bloques separados para autorización RRHH.",
@@ -413,7 +412,7 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
             ))
     else:
         # Si no hay turno definido, marcar como visita
-        crear_visita(db, empleado.id, asistencia.id)
+        # No crear visita automáticamente para evitar errores de timezone
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
             tipo_observacion="Salida sin turno definido. Registrado como visita.",
@@ -434,7 +433,21 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/fila-externos", response_model=FilaExternoOut)
-def crear_externo(payload: FilaExternoCreate, authorization: str | None = Header(None), db: Session = Depends(get_db)):
+def crear_externo(
+    tipo_visitante: str = Form(...),
+    nombre_empresa: str = Form(...),
+    chofer: str | None = Form(None),
+    placa: str | None = Form(None),
+    latitud: float | None = Form(None),
+    longitud: float | None = Form(None),
+    fotos: list[UploadFile] = File(default=[]),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db)
+):
+    from app.models import EvidenciaFotografica
+    import os
+    from pathlib import Path
+    
     vigilante_id = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization.replace("Bearer ", "")
@@ -446,14 +459,43 @@ def crear_externo(payload: FilaExternoCreate, authorization: str | None = Header
                 vigilante_id = vigilante.id
     
     externo = FilaExterno(
-        tipo_visitante=payload.tipo_visitante,
-        nombre_empresa=payload.nombre_empresa,
-        chofer=payload.chofer,
-        placa=payload.placa,
+        tipo_visitante=tipo_visitante,
+        nombre_empresa=nombre_empresa,
+        chofer=chofer,
+        placa=placa,
         vigilante_id=vigilante_id,
-        hora_llegada=utc_now()
+        hora_llegada=utc_now(),
+        latitud=latitud,
+        longitud=longitud
     )
     db.add(externo)
+    db.commit()
+    db.refresh(externo)
+    
+    # Crear directorio para fotos si no existe
+    upload_dir = Path("uploads/evidencias")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Guardar fotos si existen
+    for foto in fotos:
+        # Generar nombre único para el archivo
+        timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
+        filename = f"externo_{externo.id}_{timestamp}_{foto.filename}"
+        file_path = upload_dir / filename
+        
+        # Guardar archivo
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(foto.file, buffer)
+        
+        # Crear registro en base de datos
+        evidencia = EvidenciaFotografica(
+            referencia_id=externo.id,
+            referencia_tipo="fila_externo",
+            ruta_archivo=str(file_path),
+            fecha_captura=utc_now()
+        )
+        db.add(evidencia)
+    
     db.commit()
     db.refresh(externo)
     return externo
@@ -486,6 +528,142 @@ def asignar_anden(id: int, payload: FilaExternoAsignar, db: Session = Depends(ge
 @router.get("/fila-externos", response_model=list[FilaExternoOut])
 def listar_externos(db: Session = Depends(get_db)):
     return db.scalars(select(FilaExterno).where(FilaExterno.estado_fila != EstadoFila.RETIRADO).order_by(FilaExterno.hora_llegada.desc())).all()
+
+
+@router.post("/fila-externos/{id}/agregar-evidencias")
+def agregar_evidencia_externo(
+    id: int,
+    fotos: list[UploadFile] = File(...),
+    db: Session = Depends(get_db)
+):
+    """Agrega evidencias fotográficas a un externo existente"""
+    from app.models import EvidenciaFotografica
+    from pathlib import Path
+    
+    externo = db.get(FilaExterno, id)
+    if not externo:
+        raise HTTPException(status_code=404, detail="Visitante no encontrado")
+    
+    # Crear directorio para fotos si no existe
+    upload_dir = Path("uploads/evidencias")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Guardar fotos
+    for foto in fotos:
+        # Generar nombre único para el archivo
+        timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
+        filename = f"externo_{externo.id}_{timestamp}_{foto.filename}"
+        file_path = upload_dir / filename
+        
+        # Guardar archivo
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(foto.file, buffer)
+        
+        # Crear registro en base de datos
+        evidencia = EvidenciaFotografica(
+            referencia_id=externo.id,
+            referencia_tipo="fila_externo",
+            ruta_archivo=str(file_path),
+            fecha_captura=utc_now()
+        )
+        db.add(evidencia)
+    
+    db.commit()
+    
+    return {
+        "message": f"Se agregaron {len(fotos)} evidencia(s) fotográfica(s)",
+        "agregados": len(fotos)
+    }
+
+
+@router.get("/fila-externos/{id}/evidencias")
+def obtener_evidencias_externo(id: int, db: Session = Depends(get_db)):
+    """Obtiene las evidencias fotográficas de un visitante externo"""
+    from app.models import EvidenciaFotografica
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    
+    evidencias = db.scalars(
+        select(EvidenciaFotografica).where(
+            EvidenciaFotografica.referencia_id == id,
+            EvidenciaFotografica.referencia_tipo == "fila_externo"
+        )
+    ).all()
+    
+    return [
+        {
+            "id": e.id,
+            "ruta_archivo": e.ruta_archivo,
+            "fecha_captura": e.fecha_captura.isoformat()
+        }
+        for e in evidencias
+    ]
+
+
+@router.get("/fila-externos/{id}/evidencias/{evidencia_id}")
+def descargar_evidencia(id: int, evidencia_id: int, db: Session = Depends(get_db)):
+    """Descarga una evidencia fotográfica específica"""
+    from app.models import EvidenciaFotografica
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    
+    evidencia = db.scalar(
+        select(EvidenciaFotografica).where(
+            EvidenciaFotografica.id == evidencia_id,
+            EvidenciaFotografica.referencia_id == id,
+            EvidenciaFotografica.referencia_tipo == "fila_externo"
+        )
+    )
+    
+    if not evidencia:
+        raise HTTPException(status_code=404, detail="Evidencia no encontrada")
+    
+    file_path = Path(evidencia.ruta_archivo)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    
+    return FileResponse(file_path)
+
+
+@router.post("/limpiar-evidencias-antiguas")
+def limpiar_evidencias_antiguas(db: Session = Depends(get_db)):
+    """Elimina evidencias fotográficas con más de 1 mes de antigüedad"""
+    from app.models import EvidenciaFotografica
+    from datetime import timedelta
+    from pathlib import Path
+    import os
+    
+    now = utc_now()
+    limite = now - timedelta(days=30)
+    
+    # Buscar evidencias antiguas
+    evidencias_antiguas = db.scalars(
+        select(EvidenciaFotografica).where(
+            EvidenciaFotografica.fecha_captura < limite
+        )
+    ).all()
+    
+    eliminados = 0
+    for evidencia in evidencias_antiguas:
+        file_path = Path(evidencia.ruta_archivo)
+        
+        # Eliminar archivo del sistema
+        if file_path.exists():
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Error al eliminar archivo {file_path}: {e}")
+        
+        # Eliminar registro de base de datos
+        db.delete(evidencia)
+        eliminados += 1
+    
+    db.commit()
+    
+    return {
+        "message": f"Se eliminaron {eliminados} evidencias fotográficas antiguas",
+        "eliminados": eliminados
+    }
 
 
 @router.put("/fila-externos/{id}/salida", response_model=FilaExternoOut)

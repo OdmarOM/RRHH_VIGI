@@ -14,13 +14,19 @@ router = APIRouter(tags=["supervisor"])
 @router.get("/incidencias", response_model=list[dict])
 def incidencias(
     db: Session = Depends(get_db),
-    user: UsuarioSistema = Depends(require_roles(RolNombre.SUPERVISOR)),
+    user: UsuarioSistema = Depends(require_roles(RolNombre.SUPERVISOR, RolNombre.RRHH, RolNombre.ADMINISTRADOR, RolNombre.SUPERUSUARIO)),
 ):
     from app.core.time import utc_now
     from datetime import timedelta
 
-    departamentos = select(SupervisorDepartamento.departamento_id).where(SupervisorDepartamento.usuario_id == user.id)
-    empleados_ids = db.scalars(select(Empleado.id).where(Empleado.departamento_id.in_(departamentos))).all()
+    # Si es supervisor, filtrar por sus departamentos asignados
+    # Si es RRHH/Admin/Superusuario, ver todos los empleados
+    if user.rol == RolNombre.SUPERVISOR:
+        departamentos = select(SupervisorDepartamento.departamento_id).where(SupervisorDepartamento.usuario_id == user.id)
+        empleados_ids = db.scalars(select(Empleado.id).where(Empleado.departamento_id.in_(departamentos))).all()
+    else:
+        # RRHH, Admin, Superusuario ven todos los empleados
+        empleados_ids = db.scalars(select(Empleado.id).where(Empleado.activo == True)).all()
 
     now = utc_now()
 

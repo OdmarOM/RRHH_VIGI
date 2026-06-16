@@ -10,8 +10,9 @@ export function ZebraCaseta() {
   const [externos, setExternos] = useState([])
   const [observaciones, setObservaciones] = useState([])
   const [modalAnden, setModalAnden] = useState({ visible: false, id: null })
-  const [modalExterno, setModalExterno] = useState({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '' })
+  const [modalExterno, setModalExterno] = useState({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })
   const [modalConfirmacionSalida, setModalConfirmacionSalida] = useState({ visible: false, id: null, nombre: '' })
+  const [modalEvidencia, setModalEvidencia] = useState({ visible: false, externoId: null, fotos: [] })
   const inputRef = useRef(null)
 
   const OBSERVACIONES_OPCIONES = ['Sin Uniforme', 'Sin Gafete', 'EPP Incompleto', 'Otro']
@@ -44,6 +45,9 @@ export function ZebraCaseta() {
       })
       if (data.estado_registro === 'INCIDENCIA') {
         setMensaje(data.mensaje)
+        setTimeout(() => setMensaje(null), 5000)
+      } else if (data.estado_registro === 'VISITA_DESCANSO') {
+        setMensaje('🏖️ Entrada registrada como VISITA (ausencia programada activa)')
         setTimeout(() => setMensaje(null), 5000)
       } else {
         setMensaje('✅ Entrada registrada correctamente')
@@ -78,21 +82,53 @@ export function ZebraCaseta() {
   }
 
   function abrirModalExterno() {
-    setModalExterno({ visible: true, tipo: 'Externo', nombre: '', chofer: '', placa: '' })
+    setModalExterno({ visible: true, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })
+  }
+
+  function abrirModalEvidencia(externoId) {
+    setModalEvidencia({ visible: true, externoId, fotos: [] })
+  }
+
+  async function agregarEvidenciaExterno() {
+    if (!modalEvidencia.externoId) return
+    try {
+      const formData = new FormData()
+      modalEvidencia.fotos.forEach((foto) => {
+        formData.append('fotos', foto)
+      })
+      
+      await api.post(`/caseta/fila-externos/${modalEvidencia.externoId}/agregar-evidencias`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      setModalEvidencia({ visible: false, externoId: null, fotos: [] })
+      cargarExternos()
+    } catch (err) {
+      console.error('Error al agregar evidencia:', err)
+    }
   }
 
   async function crearExterno() {
     if (!modalExterno.nombre.trim()) return
     try {
-      await api.post('/caseta/fila-externos', {
-        tipo_visitante: modalExterno.tipo,
-        nombre_empresa: modalExterno.nombre,
-        chofer: modalExterno.chofer || null,
-        placa: modalExterno.placa || null
+      const formData = new FormData()
+      formData.append('tipo_visitante', modalExterno.tipo)
+      formData.append('nombre_empresa', modalExterno.nombre)
+      if (modalExterno.chofer) formData.append('chofer', modalExterno.chofer)
+      if (modalExterno.placa) formData.append('placa', modalExterno.placa)
+      
+      // Agregar fotos si existen
+      modalExterno.fotos.forEach((foto, index) => {
+        formData.append(`fotos`, foto)
       })
-      setModalExterno({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '' })
+      
+      await api.post('/caseta/fila-externos', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      setModalExterno({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })
       cargarExternos()
-    } catch {}
+    } catch (err) {
+      console.error('Error al crear externo:', err)
+    }
   }
 
   function abrirModalAnden(id) {
@@ -227,9 +263,20 @@ export function ZebraCaseta() {
         <p style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>⏰ Pase expira: {new Date(empleadoEscaneado.pase_espera_expira).toLocaleTimeString()}</p>
       </div>}
 
-      {empleadoEscaneado.fuera_horario && <div style={{ padding: '1rem', background: 'rgba(234,179,8,0.2)', borderRadius: '0.75rem', border: '1px solid #eab308' }}>
+      {empleadoEscaneado.fuera_horario && !empleadoEscaneado.ausencias_programadas?.length && <div style={{ padding: '1rem', background: 'rgba(234,179,8,0.2)', borderRadius: '0.75rem', border: '1px solid #eab308' }}>
         <p style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>⚠️ Fuera de horario</p>
         {empleadoEscaneado.horario && <p style={{ fontSize: '0.875rem', margin: '0.25rem 0 0', color: '#94a3b8' }}>Entrada oficial: {empleadoEscaneado.horario.hora_entrada_oficial} (tolerancia: {empleadoEscaneado.horario.tolerancia_minutos} min)</p>}
+      </div>}
+
+      {empleadoEscaneado.ausencias_programadas && empleadoEscaneado.ausencias_programadas.length > 0 && <div style={{ padding: '1rem', background: 'rgba(220,38,38,0.2)', borderRadius: '0.75rem', border: '1px solid #dc2626' }}>
+        <p style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>🏖️ {empleadoEscaneado.ausencias_programadas[0].tipo}</p>
+        {empleadoEscaneado.ausencias_programadas.map((ausencia, idx) => (
+          <div key={idx} style={{ marginTop: '0.5rem' }}>
+            <p style={{ fontSize: '0.875rem', margin: '0.25rem 0 0', color: '#94a3b8' }}>
+              Del {new Date(ausencia.fecha_inicio).toLocaleDateString()} al {new Date(ausencia.fecha_fin).toLocaleDateString()}
+            </p>
+          </div>
+        ))}
       </div>}
 
       {empleadoEscaneado.estado_empleado !== 'Laborando' && empleadoEscaneado.estado_empleado !== 'Salida_Temporal' && <>
@@ -283,35 +330,68 @@ export function ZebraCaseta() {
       </div>
       {externos.length === 0 ? <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>Sin visitantes en fila</p> : externos.map((x) => {
         const requiereAnden = x.tipo_visitante === 'Cliente' || x.tipo_visitante === 'Externo'
-        return <button key={x.id} onClick={() => {
-          if (x.estado_fila === 'Espera_Amarillo') {
-            if (requiereAnden) {
-              abrirModalAnden(x.id)
+        return <div key={x.id} style={{ borderRadius: '1rem', padding: '1.25rem', background: x.estado_fila === 'Adentro_Verde' ? 'linear-gradient(135deg, #059669, #047857)' : 'linear-gradient(135deg, #eab308, #ca8a04)', color: x.estado_fila === 'Adentro_Verde' ? '#fff' : '#020617', display: 'grid', gap: '0.5rem' }}>
+        <div 
+          onClick={() => {
+            if (x.estado_fila === 'Espera_Amarillo') {
+              if (requiereAnden) {
+                abrirModalAnden(x.id)
+              } else {
+                marcarEntradaDirecta(x.id)
+              }
             } else {
-              marcarEntradaDirecta(x.id)
+              marcarSalidaExterno(x.id)
             }
-          } else {
-            marcarSalidaExterno(x.id)
-          }
-        }} style={{ borderRadius: '1rem', padding: '1.25rem', textAlign: 'left', fontWeight: 900, border: 'none', cursor: 'pointer', background: x.estado_fila === 'Adentro_Verde' ? 'linear-gradient(135deg, #059669, #047857)' : 'linear-gradient(135deg, #eab308, #ca8a04)', color: x.estado_fila === 'Adentro_Verde' ? '#fff' : '#020617', display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-        <div style={{ display: 'grid', gap: '0.25rem' }}>
-          <div style={{ fontSize: '1.25rem' }}>{x.nombre_empresa}</div>
-          <div style={{ fontSize: '0.875rem', opacity: 0.8 }}>{x.tipo_visitante.replace('_', ' ')}</div>
-          {(x.chofer || x.placa) && <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-            {x.chofer && <span>👤 {x.chofer}</span>}
-            {x.chofer && x.placa && <span> • </span>}
-            {x.placa && <span>🚗 {x.placa}</span>}
-          </div>}
-          <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-            🕐 Llegada: {new Date(x.hora_llegada).toLocaleTimeString()}
-            {x.hora_salida && <span> • Salida: {new Date(x.hora_salida).toLocaleTimeString()}</span>}
+          }}
+          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', cursor: 'pointer' }}
+        >
+          <div style={{ display: 'grid', gap: '0.25rem', flex: 1 }}>
+            <div style={{ fontSize: '1.25rem' }}>{x.nombre_empresa}</div>
+            <div style={{ fontSize: '0.875rem', opacity: 0.8 }}>{x.tipo_visitante.replace('_', ' ')}</div>
+            {(x.chofer || x.placa) && <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+              {x.chofer && <span>👤 {x.chofer}</span>}
+              {x.chofer && x.placa && <span> • </span>}
+              {x.placa && <span>🚗 {x.placa}</span>}
+            </div>}
+            <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
+              🕐 Llegada: {new Date(x.hora_llegada).toLocaleTimeString()}
+              {x.hora_salida && <span> • Salida: {new Date(x.hora_salida).toLocaleTimeString()}</span>}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {x.estado_fila === 'Adentro_Verde' ? <span>✅ {requiereAnden ? x.anden_asignado : 'Adentro'}</span> : <span>⏳ Espera</span>}
+            <span style={{ fontSize: '1.5rem' }}>{x.estado_fila === 'Adentro_Verde' ? '🟢' : '🟡'}</span>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {x.estado_fila === 'Adentro_Verde' ? <span>✅ {requiereAnden ? x.anden_asignado : 'Adentro'}</span> : <span>⏳ Espera</span>}
-          <span style={{ fontSize: '1.5rem' }}>{x.estado_fila === 'Adentro_Verde' ? '🟢' : '🟡'}</span>
-        </div>
-      </button>})}
+        {x.estado_fila === 'Espera_Amarillo' && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button 
+              onClick={(e) => { e.stopPropagation(); abrirModalEvidencia(x.id) }}
+              style={{ 
+                width: '4rem',
+                height: '4rem',
+                borderRadius: '50%',
+                fontSize: '2rem',
+                fontWeight: 700, 
+                background: 'rgba(59, 130, 246, 0.95)', 
+                border: '3px solid #3b82f6', 
+                color: '#fff', 
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                transition: 'transform 0.2s'
+              }}
+              onMouseEnter={(e) => e.target.style.transform = 'scale(1.1)'}
+              onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
+              title="Agregar evidencia fotográfica"
+            >
+              📸
+            </button>
+          </div>
+        )}
+      </div>})}
     </section>
 
     {modalAnden.visible && <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
@@ -337,8 +417,15 @@ export function ZebraCaseta() {
           </select>
         </div>
         <div>
-          <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Nombre de la empresa *</label>
-          <input className="input" placeholder="Empresa" value={modalExterno.nombre} onChange={(e) => setModalExterno({ ...modalExterno, nombre: e.target.value })} />
+          <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+            {modalExterno.tipo === 'Cliente' ? 'Nombre del cliente *' : 'Nombre de la empresa *'}
+          </label>
+          <input 
+            className="input" 
+            placeholder={modalExterno.tipo === 'Cliente' ? 'Cliente' : 'Empresa'} 
+            value={modalExterno.nombre} 
+            onChange={(e) => setModalExterno({ ...modalExterno, nombre: e.target.value })} 
+          />
         </div>
         <div>
           <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Nombre del chofer (opcional)</label>
@@ -348,9 +435,22 @@ export function ZebraCaseta() {
           <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Placa del vehículo (opcional)</label>
           <input className="input" placeholder="Placa" value={modalExterno.placa} onChange={(e) => setModalExterno({ ...modalExterno, placa: e.target.value })} />
         </div>
+        <div>
+          <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Evidencias fotográficas (opcional)</label>
+          <input 
+            type="file" 
+            accept="image/*" 
+            multiple 
+            onChange={(e) => setModalExterno({ ...modalExterno, fotos: Array.from(e.target.files) })}
+            style={{ marginBottom: '0.5rem' }}
+          />
+          {modalExterno.fotos.length > 0 && (
+            <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{modalExterno.fotos.length} foto(s) seleccionada(s)</p>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn-green" onClick={crearExterno} style={{ flex: 1 }}>Registrar</button>
-          <button onClick={() => setModalExterno({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '' })} style={{ flex: 1, padding: '0.75rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer' }}>Cancelar</button>
+          <button onClick={() => setModalExterno({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })} style={{ flex: 1, padding: '0.75rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer' }}>Cancelar</button>
         </div>
       </div>
     </div>}
@@ -362,6 +462,29 @@ export function ZebraCaseta() {
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button onClick={confirmarSalidaExterno} style={{ flex: 1, padding: '0.75rem', background: '#ef4444', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>Confirmar Salida</button>
           <button onClick={() => setModalConfirmacionSalida({ visible: false, id: null, nombre: '' })} style={{ flex: 1, padding: '0.75rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer' }}>Cancelar</button>
+        </div>
+      </div>
+    </div>}
+
+    {modalEvidencia.visible && <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      <div className="panel" style={{ padding: '2rem', minWidth: '350px', display: 'grid', gap: '1rem' }}>
+        <h3 style={{ fontSize: '1.5rem', fontWeight: 900, margin: 0 }}>Agregar Evidencia Fotográfica</h3>
+        <div>
+          <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Fotos</label>
+          <input 
+            type="file" 
+            accept="image/*" 
+            multiple 
+            onChange={(e) => setModalEvidencia({ ...modalEvidencia, fotos: Array.from(e.target.files) })}
+            style={{ marginBottom: '0.5rem' }}
+          />
+          {modalEvidencia.fotos.length > 0 && (
+            <p style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{modalEvidencia.fotos.length} foto(s) seleccionada(s)</p>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn-green" onClick={agregarEvidenciaExterno} style={{ flex: 1 }}>Agregar</button>
+          <button onClick={() => setModalEvidencia({ visible: false, externoId: null, fotos: [] })} style={{ flex: 1, padding: '0.75rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer' }}>Cancelar</button>
         </div>
       </div>
     </div>}
