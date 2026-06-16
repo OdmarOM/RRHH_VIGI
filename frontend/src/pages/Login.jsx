@@ -84,10 +84,6 @@ export function Login() {
       {message && <section style={{ padding: '1rem', borderRadius: '0.75rem', background: message.includes('✅') ? 'rgba(5,150,105,0.1)' : message.includes('⚠️') ? 'rgba(234,179,8,0.1)' : 'rgba(220,38,38,0.1)', border: `1px solid ${message.includes('✅') ? '#059669' : message.includes('⚠️') ? '#eab308' : '#dc2626'}`, textAlign: 'center' }}>
         <p style={{ fontSize: '0.875rem', fontWeight: 700, margin: 0 }}>{message}</p>
       </section>}
-
-      <div style={{ textAlign: 'center', paddingTop: '1rem', borderTop: '1px solid #1e293b' }}>
-        <p style={{ fontSize: '0.75rem', color: '#64748b', margin: 0 }}>Usuarios de prueba: super/super123, vigilante/vigilante123</p>
-      </div>
     </form>
   </main>
 }
