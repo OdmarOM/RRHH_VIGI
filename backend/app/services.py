@@ -3,7 +3,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.time import utc_now
-from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TipoSalida, TurnoHorario, UsuarioSistema, Visita
+from app.models import BloqueHorasExtra, CorreccionManual, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TipoSalida, TurnoHorario, UsuarioSistema, Visita
 
 
 def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
@@ -50,6 +50,14 @@ def calcular_y_registrar_bloques_horas_extra(db: Session, asistencia: RegistroAs
     
     hora_entrada_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
     hora_salida_oficial = datetime.combine(asistencia.fecha_turno, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+    
+    # Eliminar bloques existentes para evitar duplicación al recalcular
+    bloques_existentes = db.scalars(
+        select(BloqueHorasExtra).where(BloqueHorasExtra.asistencia_id == asistencia.id)
+    ).all()
+    for b in bloques_existentes:
+        db.delete(b)
+    db.flush()
     
     # Bloque 1: Horas extra antes del inicio del turno
     if hora_entrada < hora_entrada_oficial:
@@ -142,9 +150,18 @@ def procesar_visitas_vencidas(db: Session):
 
 
 def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict:
-    """Calcula las horas laboradas de un empleado en una fecha específica basándose en eventos.
-    Solo cuenta visitas pagadas y horas extra autorizadas por RRHH.
-    Considera ausencias (vacaciones/incapacidades/permisos) con su porcentaje de aportación."""
+    """Calcula las horas laboradas de un empleado en una fecha específica.
+    
+    Lógica de bloques:
+    - Caso 1: Bloque completamente fuera de horario = visita (requiere validación RRHH)
+    - Caso 2: Entra antes de X, sale en horario = extra previa + laborada
+    - Caso 3: Entra en horario, sale en horario = solo laborada
+    - Caso 4: Entra en horario, sale después de Y = laborada + extra posterior
+    - Caso 5: Entra antes de X, sale después de Y = extra previa + laborada + extra posterior
+    
+    Regla de turno cumplido: Después de cumplir el turno, bloques posteriores = visitas
+    Ausencias: Todos los eventos del día = visitas (sujetas a validación RRHH)
+    """
     now = utc_now()
     
     # Verificar si hay ausencia aprobada (vacaciones/incapacidad/permiso)
@@ -154,10 +171,47 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         # Vacaciones: siempre pagadas (100%)
         # Incapacidades: según porcentaje_aportacion (0-100%)
         # Permisos: según campo pagada (true/false)
+        # Y procesar eventos del día como visitas
         
         tipo_ausencia = ausencia["tipo_ausencia"]
         pagada = ausencia["pagada"]
         porcentaje = ausencia["porcentaje_aportacion"]
+        
+        # Obtener eventos del día para procesar como visitas
+        fecha_inicio = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=now.tzinfo)
+        fecha_fin = datetime.combine(fecha, datetime.max.time()).replace(tzinfo=now.tzinfo)
+        
+        eventos = db.scalars(
+            select(EventoAsistencia)
+            .where(EventoAsistencia.empleado_id == empleado_id)
+            .where(EventoAsistencia.fecha_evento >= fecha_inicio)
+            .where(EventoAsistencia.fecha_evento <= fecha_fin)
+            .order_by(EventoAsistencia.fecha_evento)
+        ).all()
+        
+        # Procesar eventos como bloques de visitas
+        bloques_visitas = []
+        hora_entrada_actual = None
+        
+        for evento in eventos:
+            if evento.tipo_evento == TipoEvento.ENTRADA:
+                hora_entrada_actual = evento.fecha_evento
+            elif evento.tipo_evento == TipoEvento.SALIDA and hora_entrada_actual:
+                hora_salida = evento.fecha_evento
+                if hora_salida.tzinfo is None:
+                    hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+                if hora_entrada_actual.tzinfo is None:
+                    hora_entrada_actual = hora_entrada_actual.replace(tzinfo=now.tzinfo)
+                
+                minutos = int((hora_salida - hora_entrada_actual).total_seconds() / 60)
+                bloques_visitas.append({
+                    "tipo": "Visita_Ausencia",
+                    "hora_inicio": hora_entrada_actual.isoformat(),
+                    "hora_fin": hora_salida.isoformat(),
+                    "minutos": minutos,
+                    "motivo_ausencia": tipo_ausencia
+                })
+                hora_entrada_actual = None
         
         if tipo_ausencia == "Vacaciones":
             # Vacaciones siempre cuentan como horas laboradas al 100%
@@ -171,13 +225,42 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             else:
                 minutos_laborados = 0
             
+            # Aplicar correcciones manuales
+            correcciones = db.scalars(
+                select(CorreccionManual).where(
+                    CorreccionManual.empleado_id == empleado_id,
+                    CorreccionManual.fecha == fecha
+                )
+            ).all()
+            
+            for correccion in correcciones:
+                if correccion.tipo_correccion.value == "Horas_Laboradas":
+                    minutos_laborados += correccion.minutos_agregados
+            
             return {
                 "minutos_laborados": minutos_laborados,
                 "minutos_extra": 0,
                 "minutos_descanso": 0,
-                "total_eventos": 0,
-                "eventos": [],
-                "ausencia": ausencia
+                "total_eventos": len(eventos),
+                "eventos": [
+                    {
+                        "tipo": e.tipo_evento.value,
+                        "fecha": e.fecha_evento.isoformat(),
+                        "observaciones": e.observaciones
+                    }
+                    for e in eventos
+                ],
+                "ausencia": ausencia,
+                "bloques_visitas": bloques_visitas,  # Bloques de visitas detectados
+                "bloques_extra": [],
+                "correcciones": [
+                    {
+                        "tipo": c.tipo_correccion.value,
+                        "minutos": c.minutos_agregados,
+                        "motivo": c.motivo
+                    }
+                    for c in correcciones
+                ]
             }
         elif tipo_ausencia == "Incapacidad":
             # Incapacidad: según porcentaje de aportación
@@ -191,13 +274,42 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             else:
                 minutos_laborados = 0
             
+            # Aplicar correcciones manuales
+            correcciones = db.scalars(
+                select(CorreccionManual).where(
+                    CorreccionManual.empleado_id == empleado_id,
+                    CorreccionManual.fecha == fecha
+                )
+            ).all()
+            
+            for correccion in correcciones:
+                if correccion.tipo_correccion.value == "Horas_Laboradas":
+                    minutos_laborados += correccion.minutos_agregados
+            
             return {
                 "minutos_laborados": minutos_laborados,
                 "minutos_extra": 0,
                 "minutos_descanso": 0,
-                "total_eventos": 0,
-                "eventos": [],
-                "ausencia": ausencia
+                "total_eventos": len(eventos),
+                "eventos": [
+                    {
+                        "tipo": e.tipo_evento.value,
+                        "fecha": e.fecha_evento.isoformat(),
+                        "observaciones": e.observaciones
+                    }
+                    for e in eventos
+                ],
+                "ausencia": ausencia,
+                "bloques_visitas": bloques_visitas,  # Bloques de visitas detectados
+                "bloques_extra": [],
+                "correcciones": [
+                    {
+                        "tipo": c.tipo_correccion.value,
+                        "minutos": c.minutos_agregados,
+                        "motivo": c.motivo
+                    }
+                    for c in correcciones
+                ]
             }
         elif tipo_ausencia == "Permiso":
             # Permiso: según campo pagada
@@ -213,13 +325,42 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             else:
                 minutos_laborados = 0
             
+            # Aplicar correcciones manuales
+            correcciones = db.scalars(
+                select(CorreccionManual).where(
+                    CorreccionManual.empleado_id == empleado_id,
+                    CorreccionManual.fecha == fecha
+                )
+            ).all()
+            
+            for correccion in correcciones:
+                if correccion.tipo_correccion.value == "Horas_Laboradas":
+                    minutos_laborados += correccion.minutos_agregados
+            
             return {
                 "minutos_laborados": minutos_laborados,
                 "minutos_extra": 0,
                 "minutos_descanso": 0,
-                "total_eventos": 0,
-                "eventos": [],
-                "ausencia": ausencia
+                "total_eventos": len(eventos),
+                "eventos": [
+                    {
+                        "tipo": e.tipo_evento.value,
+                        "fecha": e.fecha_evento.isoformat(),
+                        "observaciones": e.observaciones
+                    }
+                    for e in eventos
+                ],
+                "ausencia": ausencia,
+                "bloques_visitas": bloques_visitas,  # Bloques de visitas detectados
+                "bloques_extra": [],
+                "correcciones": [
+                    {
+                        "tipo": c.tipo_correccion.value,
+                        "minutos": c.minutos_agregados,
+                        "motivo": c.motivo
+                    }
+                    for c in correcciones
+                ]
             }
     
     # Obtener todos los eventos del empleado en la fecha
@@ -236,16 +377,149 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
     ).all()
     
     if not eventos:
+        # Fallback: usar hora_entrada_real y hora_salida_real del RegistroAsistencia
+        asistencia = db.scalar(
+            select(RegistroAsistencia).where(
+                RegistroAsistencia.empleado_id == empleado_id,
+                RegistroAsistencia.fecha_turno == fecha
+            )
+        )
+        
+        # Obtener horario oficial del turno
+        empleado = db.get(Empleado, empleado_id)
+        turno = get_empleado_turno(db, empleado, fecha.weekday())
+        hora_entrada_oficial = None
+        hora_salida_oficial = None
+        tolerancia_minutos = 0
+        if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+            hora_entrada_oficial = datetime.combine(fecha, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+            hora_salida_oficial = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+            tolerancia_minutos = turno.get("tolerancia_minutos", 0)
+        
+        minutos_laborados = 0
+        bloques_extra = []
+        
+        if asistencia and asistencia.hora_entrada_real and asistencia.hora_salida_real:
+            # Asegurar que ambos tengan timezone
+            hora_entrada = asistencia.hora_entrada_real
+            hora_salida = asistencia.hora_salida_real
+            if hora_entrada.tzinfo is None:
+                hora_entrada = hora_entrada.replace(tzinfo=now.tzinfo)
+            if hora_salida.tzinfo is None:
+                hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+            
+            # Aplicar lógica de los 5 casos
+            if hora_entrada_oficial and hora_salida_oficial:
+                # Caso 1: Bloque completamente antes de X o después de Y = visita
+                if hora_salida <= hora_entrada_oficial or hora_entrada >= hora_salida_oficial:
+                    # Bloque completamente fuera de horario = visita (no se cuenta)
+                    pass
+                # Caso 2: Entra antes de X, sale en horario
+                elif hora_entrada < hora_entrada_oficial and hora_salida <= hora_salida_oficial:
+                    minutos_laborados = int((hora_salida - hora_entrada_oficial).total_seconds() / 60)
+                    minutos_extra_previa = int((hora_entrada_oficial - hora_entrada).total_seconds() / 60)
+                    bloques_extra.append({
+                        "tipo": "Extra_Previa",
+                        "hora_inicio": hora_entrada.isoformat(),
+                        "hora_fin": hora_entrada_oficial.isoformat(),
+                        "minutos": minutos_extra_previa
+                    })
+                # Caso 3: Entra en horario, sale en horario
+                elif hora_entrada >= hora_entrada_oficial and hora_salida <= hora_salida_oficial:
+                    # Verificar si está dentro de tolerancia de entrada
+                    limite_entrada_tolerancia = hora_entrada_oficial + timedelta(minutes=tolerancia_minutos)
+                    if hora_entrada <= limite_entrada_tolerancia:
+                        # Está dentro de tolerancia, usar hora oficial
+                        minutos_laborados = int((hora_salida - hora_entrada_oficial).total_seconds() / 60)
+                    else:
+                        # Fuera de tolerancia, usar hora real
+                        minutos_laborados = int((hora_salida - hora_entrada).total_seconds() / 60)
+                # Caso 4: Entra en horario, sale después de Y
+                elif hora_entrada >= hora_entrada_oficial and hora_salida > hora_salida_oficial:
+                    # Verificar si está dentro de tolerancia de entrada
+                    limite_entrada_tolerancia = hora_entrada_oficial + timedelta(minutes=tolerancia_minutos)
+                    if hora_entrada <= limite_entrada_tolerancia:
+                        # Está dentro de tolerancia, usar hora oficial
+                        minutos_laborados = int((hora_salida_oficial - hora_entrada_oficial).total_seconds() / 60)
+                    else:
+                        # Fuera de tolerancia, usar hora real
+                        minutos_laborados = int((hora_salida_oficial - hora_entrada).total_seconds() / 60)
+                    minutos_extra_posterior = int((hora_salida - hora_salida_oficial).total_seconds() / 60)
+                    bloques_extra.append({
+                        "tipo": "Extra_Posterior",
+                        "hora_inicio": hora_salida_oficial.isoformat(),
+                        "hora_fin": hora_salida.isoformat(),
+                        "minutos": minutos_extra_posterior
+                    })
+                # Caso 5: Entra antes de X, sale después de Y
+                elif hora_entrada < hora_entrada_oficial and hora_salida > hora_salida_oficial:
+                    minutos_laborados = int((hora_salida_oficial - hora_entrada_oficial).total_seconds() / 60)
+                    minutos_extra_previa = int((hora_entrada_oficial - hora_entrada).total_seconds() / 60)
+                    minutos_extra_posterior = int((hora_salida - hora_salida_oficial).total_seconds() / 60)
+                    bloques_extra.append({
+                        "tipo": "Extra_Previa",
+                        "hora_inicio": hora_entrada.isoformat(),
+                        "hora_fin": hora_entrada_oficial.isoformat(),
+                        "minutos": minutos_extra_previa
+                    })
+                    bloques_extra.append({
+                        "tipo": "Extra_Posterior",
+                        "hora_inicio": hora_salida_oficial.isoformat(),
+                        "hora_fin": hora_salida.isoformat(),
+                        "minutos": minutos_extra_posterior
+                    })
+            else:
+                # Sin horario oficial, contar todo
+                minutos_laborados = int((hora_salida - hora_entrada).total_seconds() / 60)
+        
+        # Aplicar correcciones manuales
+        correcciones = db.scalars(
+            select(CorreccionManual).where(
+                CorreccionManual.empleado_id == empleado_id,
+                CorreccionManual.fecha == fecha
+            )
+        ).all()
+        
+        for correccion in correcciones:
+            if correccion.tipo_correccion.value == "Horas_Laboradas":
+                minutos_laborados += correccion.minutos_agregados
+            elif correccion.tipo_correccion.value == "Permiso":
+                # Los permisos descuentan de las horas laboradas (RRHH agrega minutos positivos que se restan)
+                minutos_laborados -= correccion.minutos_agregados
+        
         return {
-            "minutos_laborados": 0,
+            "minutos_laborados": minutos_laborados,
             "minutos_extra": 0,
             "minutos_descanso": 0,
             "total_eventos": 0,
-            "eventos": []
+            "eventos": [],
+            "bloques_extra": bloques_extra,
+            "correcciones": [
+                {
+                    "tipo": c.tipo_correccion.value,
+                    "minutos": c.minutos_agregados,
+                    "motivo": c.motivo
+                }
+                for c in correcciones
+            ]
         }
+    
+    # Obtener horario oficial del turno para limitar cálculo
+    empleado = db.get(Empleado, empleado_id)
+    turno = get_empleado_turno(db, empleado, fecha.weekday())
+    hora_entrada_oficial = None
+    hora_salida_oficial = None
+    tolerancia_entrada_previa = 0  # Tolerancia para entrada antes de la hora oficial
+    if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+        hora_entrada_oficial = datetime.combine(fecha, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+        hora_salida_oficial = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+        tolerancia_entrada_previa = turno.get("tolerancia_entrada_previa_minutos", 0)
     
     minutos_laborados = 0
     minutos_descanso = 0
+    turno_cumplido = False  # Rastrear si ya se cumplió el turno
+    turno_terminado_por_permiso = False  # Rastrear si el turno terminó por permiso sin regreso
+    bloques_extra = []  # Bloques de horas extra creados
     hora_entrada_actual = None
     hora_salida_temporal = None
     tipo_salida_temporal_actual = None
@@ -277,15 +551,97 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         if evento.tipo_evento == TipoEvento.ENTRADA:
             hora_entrada_actual = evento.fecha_evento
         elif evento.tipo_evento == TipoEvento.SALIDA and hora_entrada_actual:
-            # Calcular minutos entre entrada y salida
-            # Asegurar que ambos tengan timezone
+            # Procesar bloque entrada-salida según los 5 casos
             hora_salida = evento.fecha_evento
             if hora_salida.tzinfo is None:
                 hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
             if hora_entrada_actual.tzinfo is None:
                 hora_entrada_actual = hora_entrada_actual.replace(tzinfo=now.tzinfo)
-            minutos = int((hora_salida - hora_entrada_actual).total_seconds() / 60)
-            minutos_laborados += minutos
+            
+            if hora_entrada_oficial and hora_salida_oficial:
+                # Si ya se cumplió el turno, este bloque es visita
+                if turno_cumplido:
+                    # Bloque posterior al turno = visita (no se cuenta)
+                    pass
+                else:
+                    # Determinar caso según posición del bloque
+                    # Caso 1: Bloque completamente antes de X o después de Y = visita
+                    if hora_salida <= hora_entrada_oficial or hora_entrada_actual >= hora_salida_oficial:
+                        # Bloque completamente fuera de horario = visita
+                        pass
+                    # Caso 2: Entra antes de X, sale en horario (antes de Y)
+                    elif hora_entrada_actual < hora_entrada_oficial and hora_salida <= hora_salida_oficial:
+                        # Extra previa: entrada_real -> X
+                        minutos_extra_previa = int((hora_entrada_oficial - hora_entrada_actual).total_seconds() / 60)
+                        # Laborada: X -> salida_real
+                        minutos_laborados_bloque = int((hora_salida - hora_entrada_oficial).total_seconds() / 60)
+                        minutos_laborados += minutos_laborados_bloque
+                        # Crear bloque de extra previa (requiere validación)
+                        bloques_extra.append({
+                            "tipo": "Extra_Previa",
+                            "hora_inicio": hora_entrada_actual.isoformat(),
+                            "hora_fin": hora_entrada_oficial.isoformat(),
+                            "minutos": minutos_extra_previa
+                        })
+                    # Caso 3: Entra en horario, sale en horario = solo laborada
+                    elif hora_entrada_actual >= hora_entrada_oficial and hora_salida <= hora_salida_oficial:
+                        # Verificar si está dentro de tolerancia de entrada
+                        limite_entrada_tolerancia = hora_entrada_oficial + timedelta(minutes=turno.get("tolerancia_minutos", 0))
+                        if hora_entrada_actual <= limite_entrada_tolerancia:
+                            # Está dentro de tolerancia, usar hora oficial
+                            minutos = int((hora_salida - hora_entrada_oficial).total_seconds() / 60)
+                        else:
+                            # Fuera de tolerancia, usar hora real
+                            minutos = int((hora_salida - hora_entrada_actual).total_seconds() / 60)
+                        minutos_laborados += minutos
+                    # Caso 4: Entra en horario, sale después de Y
+                    elif hora_entrada_actual >= hora_entrada_oficial and hora_salida > hora_salida_oficial:
+                        # Verificar si está dentro de tolerancia de entrada
+                        limite_entrada_tolerancia = hora_entrada_oficial + timedelta(minutes=turno.get("tolerancia_minutos", 0))
+                        if hora_entrada_actual <= limite_entrada_tolerancia:
+                            # Está dentro de tolerancia, usar hora oficial
+                            minutos_laborados_bloque = int((hora_salida_oficial - hora_entrada_oficial).total_seconds() / 60)
+                        else:
+                            # Fuera de tolerancia, usar hora real
+                            minutos_laborados_bloque = int((hora_salida_oficial - hora_entrada_actual).total_seconds() / 60)
+                        minutos_laborados += minutos_laborados_bloque
+                        # Extra posterior: Y -> salida_real
+                        minutos_extra_posterior = int((hora_salida - hora_salida_oficial).total_seconds() / 60)
+                        # Crear bloque de extra posterior (requiere validación)
+                        bloques_extra.append({
+                            "tipo": "Extra_Posterior",
+                            "hora_inicio": hora_salida_oficial.isoformat(),
+                            "hora_fin": hora_salida.isoformat(),
+                            "minutos": minutos_extra_posterior
+                        })
+                        turno_cumplido = True  # Turno cumplido
+                    # Caso 5: Entra antes de X, sale después de Y
+                    elif hora_entrada_actual < hora_entrada_oficial and hora_salida > hora_salida_oficial:
+                        # Extra previa: entrada_real -> X
+                        minutos_extra_previa = int((hora_entrada_oficial - hora_entrada_actual).total_seconds() / 60)
+                        # Laborada: X -> Y
+                        minutos_laborados_bloque = int((hora_salida_oficial - hora_entrada_oficial).total_seconds() / 60)
+                        minutos_laborados += minutos_laborados_bloque
+                        # Extra posterior: Y -> salida_real
+                        minutos_extra_posterior = int((hora_salida - hora_salida_oficial).total_seconds() / 60)
+                        # Crear bloques de extra (requieren validación)
+                        bloques_extra.append({
+                            "tipo": "Extra_Previa",
+                            "hora_inicio": hora_entrada_actual.isoformat(),
+                            "hora_fin": hora_entrada_oficial.isoformat(),
+                            "minutos": minutos_extra_previa
+                        })
+                        bloques_extra.append({
+                            "tipo": "Extra_Posterior",
+                            "hora_inicio": hora_salida_oficial.isoformat(),
+                            "hora_fin": hora_salida.isoformat(),
+                            "minutos": minutos_extra_posterior
+                        })
+                        turno_cumplido = True  # Turno cumplido
+            else:
+                # Sin horario oficial, contar todo como laborada
+                minutos = int((hora_salida - hora_entrada_actual).total_seconds() / 60)
+                minutos_laborados += minutos
             hora_entrada_actual = None
         elif evento.tipo_evento == TipoEvento.SALIDA_TEMPORAL and hora_entrada_actual:
             # Guardar la hora de salida temporal para calcular tiempo de descanso
@@ -309,43 +665,79 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
                     hora_regreso = hora_regreso.replace(tzinfo=now.tzinfo)
                 if hora_salida_temporal.tzinfo is None:
                     hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
-                minutos_ausente = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
-                # Las salidas a Comer NO descuentan tiempo laborado: el tiempo se cuenta como trabajado
-                if tipo_salida_temporal_actual == TipoSalida.COMER.value:
-                    minutos_laborados += minutos_ausente
-                else:
+                
+                # Si el regreso es después de la hora de salida oficial, tratar como visita
+                if hora_salida_oficial and hora_regreso >= hora_salida_oficial and tipo_salida_temporal_actual == TipoSalida.PERMISO_PERSONAL.value:
+                    # El permiso se extendió hasta la hora de salida oficial
+                    # El regreso es una visita, no contar
+                    minutos_ausente = int((hora_salida_oficial - hora_salida_temporal).total_seconds() / 60)
                     minutos_descanso = minutos_ausente
+                    # No reanudar conteo, el turno terminó a la hora de salida oficial
+                    hora_entrada_actual = None
+                    turno_cumplido = True
+                    turno_terminado_por_permiso = True
+                else:
+                    minutos_ausente = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
+                    # Las salidas a Comer NO descuentan tiempo laborado: el tiempo se cuenta como trabajado
+                    if tipo_salida_temporal_actual == TipoSalida.COMER.value:
+                        minutos_laborados += minutos_ausente
+                    else:
+                        minutos_descanso = minutos_ausente
+                    # Reanudar conteo desde el regreso
+                    hora_entrada_actual = evento.fecha_evento
                 hora_salida_temporal = None
                 tipo_salida_temporal_actual = None
-            # Reanudar conteo desde el regreso
-            hora_entrada_actual = evento.fecha_evento
     
-    # Calcular minutos extra basado en horario oficial y autorización RRHH
-    turno = get_empleado_turno(db, db.get(Empleado, empleado_id), fecha.weekday())
-    minutos_extra = 0
+    # Si hay una salida temporal abierta de permiso al final del ciclo de eventos
+    # significa que el empleado no regresó, el turno termina a la hora oficial
+    if hora_salida_temporal and tipo_salida_temporal_actual == TipoSalida.PERMISO_PERSONAL.value:
+        if hora_salida_oficial:
+            # Calcular minutos de permiso hasta la hora oficial
+            if hora_salida_temporal.tzinfo is None:
+                hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
+            minutos_ausente = int((hora_salida_oficial - hora_salida_temporal).total_seconds() / 60)
+            if minutos_ausente > 0:
+                minutos_descanso = minutos_ausente
+                turno_terminado_por_permiso = True
+                turno_cumplido = True
+        hora_salida_temporal = None
+        tipo_salida_temporal_actual = None
     
-    if turno and turno["hora_salida_oficial"]:
-        hora_salida_oficial = datetime.combine(fecha, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
-        # Si hay eventos de salida después del horario oficial, calcular minutos extra
-        # Solo si están autorizados por RRHH
-        for evento in eventos:
-            if evento.tipo_evento == TipoEvento.SALIDA:
-                # Asegurar que evento.fecha_evento tenga timezone para comparación
-                hora_salida_evento = evento.fecha_evento
-                if hora_salida_evento.tzinfo is None:
-                    hora_salida_evento = hora_salida_evento.replace(tzinfo=now.tzinfo)
-                
-                if hora_salida_evento > hora_salida_oficial:
-                    # Verificar si la asistencia tiene autorización de horas extra
-                    if evento.asistencia and evento.asistencia.autorizacion_horas_extra_rrhh:
-                        minutos_extra += int((hora_salida_evento - hora_salida_oficial).total_seconds() / 60)
+    # Aplicar correcciones manuales de RRHH
+    correcciones = db.scalars(
+        select(CorreccionManual).where(
+            CorreccionManual.empleado_id == empleado_id,
+            CorreccionManual.fecha == fecha
+        )
+    ).all()
+    
+    for correccion in correcciones:
+        if correccion.tipo_correccion.value == "Horas_Laboradas":
+            minutos_laborados += correccion.minutos_agregados
+        elif correccion.tipo_correccion.value == "Permiso":
+            # Los permisos descuentan de las horas laboradas (RRHH agrega minutos positivos que se restan)
+            minutos_laborados -= correccion.minutos_agregados
+    
+    # Restar minutos de descanso (salidas temporales por permiso) de las horas laboradas
+    # Solo si el turno terminó por permiso sin regreso (los minutos ya no se contaron en los bloques)
+    if turno_terminado_por_permiso:
+        minutos_laborados -= minutos_descanso
     
     return {
         "minutos_laborados": minutos_laborados,
-        "minutos_extra": minutos_extra,
+        "minutos_extra": 0,  # No se calculan aquí, van en reporte de horas extra
         "minutos_descanso": minutos_descanso,
         "total_eventos": len(eventos),
-        "eventos": eventos_detalle
+        "eventos": eventos_detalle,
+        "bloques_extra": bloques_extra,  # Bloques de horas extra detectados
+        "correcciones": [
+            {
+                "tipo": c.tipo_correccion.value,
+                "minutos": c.minutos_agregados,
+                "motivo": c.motivo
+            }
+            for c in correcciones
+        ]
     }
 
 
@@ -509,8 +901,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones=f"Visita durante {ausencia_hoy['tipo_ausencia']}"
         ))
-        # No crear visita automáticamente para evitar errores de timezone
-        # La visita se puede crear manualmente por RRHH si es necesario
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        crear_visita(db, empleado.id, asistencia.id)
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
             tipo_observacion=f"Colaborador tiene {ausencia_hoy['tipo_ausencia']} aprobada. Entrada registrada como visita.",
@@ -556,7 +948,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita en día de descanso"
         ))
-        # No crear visita automáticamente para evitar errores de timezone
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -590,7 +983,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita después del fin del turno"
         ))
-        # No crear visita automáticamente para evitar errores de timezone
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -608,7 +1002,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita antes de turno (dentro de tolerancia)"
         ))
-        # No crear visita automáticamente para evitar errores de timezone
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
@@ -662,7 +1057,8 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             fecha_evento=now,
             observaciones="Visita muy temprana (fuera de tolerancia)"
         ))
-        # No crear visita automáticamente para evitar errores de timezone
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia

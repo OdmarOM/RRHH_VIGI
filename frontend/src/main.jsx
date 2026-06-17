@@ -36,17 +36,7 @@ function Home() {
         const token = localStorage.getItem('token')
         
         // Cargar métricas según el rol
-        if (rol === 'Vigilante' || rol === 'Superusuario') {
-          const filaData = await api.get('/caseta/fila-externos').catch(() => ({ data: [] }))
-          setMetrics({ fila_externa: filaData.data.length })
-        } else if (rol === 'Supervisor' || rol === 'RRHH' || rol === 'Administrador') {
-          const [empData, incData] = await Promise.all([
-            api.get('/admin/empleados').catch(() => ({ data: [] })),
-            api.get('/supervisor/incidencias').catch(() => ({ data: [] }))
-          ])
-          const presentes = empData.data.filter(e => e.estado_actual === 'Laborando' || e.estado_actual === 'Adentro').length
-          setMetrics({ empleados_presentes: presentes, incidencias: incData.data.length })
-        } else {
+        if (rol === 'Superusuario') {
           // Superusuario ve todo
           const [empData, incData, filaData] = await Promise.all([
             api.get('/admin/empleados').catch(() => ({ data: [] })),
@@ -55,6 +45,16 @@ function Home() {
           ])
           const presentes = empData.data.filter(e => e.estado_actual === 'Laborando' || e.estado_actual === 'Adentro').length
           setMetrics({ empleados_presentes: presentes, incidencias: incData.data.length, fila_externa: filaData.data.length })
+        } else if (rol === 'Vigilante') {
+          const filaData = await api.get('/caseta/fila-externos').catch(() => ({ data: [] }))
+          setMetrics({ fila_externa: filaData.data.length })
+        } else if (rol === 'Supervisor' || rol === 'RRHH' || rol === 'Administrador') {
+          const [empData, incData] = await Promise.all([
+            api.get('/supervisor/empleados').catch(() => ({ data: [] })),
+            api.get('/supervisor/incidencias').catch(() => ({ data: [] }))
+          ])
+          const presentes = empData.data.filter(e => e.estado_actual === 'Laborando' || e.estado_actual === 'Adentro').length
+          setMetrics({ empleados_presentes: presentes, incidencias: incData.data.length })
         }
       } catch {}
       setLoading(false)

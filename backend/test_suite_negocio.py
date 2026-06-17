@@ -8,7 +8,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from app.models import (
     Empleado, TurnoHorario, RegistroAsistencia, EventoAsistencia, 
-    Visita, BloqueHorasExtra, EstadoVisita, TipoEvento, EstadoRegistro
+    Visita, BloqueHorasExtra, EstadoVisita, TipoEvento, EstadoRegistro,
+    CorreccionManual, TipoCorreccion, RegistroAusencia, TipoAusencia
 )
 from app.services import (
     calcular_horas_laboradas, calcular_y_registrar_bloques_horas_extra, 
@@ -22,7 +23,7 @@ test_engine = create_engine(TEST_DB_URL)
 
 BASE_URL = "http://localhost:8001/api/v1"
 
-# Fecha futura reservada exclusivamente para pruebas (lunes, EMP004 tiene turno 10:40-17:00)
+# Fecha futura reservada exclusivamente para pruebas (lunes, EMP001 tiene turno 08:00-16:00)
 FECHA_PRUEBA = date(2030, 6, 17)
 
 
@@ -75,6 +76,16 @@ def limpiar_datos_prueba(session, empleado_id, fecha=FECHA_PRUEBA):
     for evento in eventos_huerfanos:
         session.delete(evento)
     
+    # Eliminar correcciones manuales de la fecha (evita acumulación entre pruebas)
+    correcciones = session.scalars(
+        select(CorreccionManual).where(
+            CorreccionManual.empleado_id == empleado_id,
+            CorreccionManual.fecha == fecha
+        )
+    ).all()
+    for c in correcciones:
+        session.delete(c)
+    
     session.commit()
 
 
@@ -84,10 +95,10 @@ class TestHorasLaboradas:
     def setup_method(self):
         self.session = Session(test_engine)
         self.empleado = self.session.scalar(
-            select(Empleado).where(Empleado.numero_empleado == "EMP004")
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
         )
         if not self.empleado:
-            raise Exception("Empleado EMP004 no encontrado")
+            raise Exception("Empleado EMP001 no encontrado")
         # Limpiar datos de prueba previos para garantizar idempotencia
         limpiar_datos_prueba(self.session, self.empleado.id)
     
@@ -262,10 +273,10 @@ class TestHorasExtras:
     def setup_method(self):
         self.session = Session(test_engine)
         self.empleado = self.session.scalar(
-            select(Empleado).where(Empleado.numero_empleado == "EMP004")
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
         )
         if not self.empleado:
-            raise Exception("Empleado EMP004 no encontrado")
+            raise Exception("Empleado EMP001 no encontrado")
         # Limpiar datos de prueba previos para garantizar idempotencia
         limpiar_datos_prueba(self.session, self.empleado.id)
     
@@ -352,10 +363,10 @@ class TestVisitasPagadas:
     def setup_method(self):
         self.session = Session(test_engine)
         self.empleado = self.session.scalar(
-            select(Empleado).where(Empleado.numero_empleado == "EMP004")
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
         )
         if not self.empleado:
-            raise Exception("Empleado EMP004 no encontrado")
+            raise Exception("Empleado EMP001 no encontrado")
         # Limpiar datos de prueba previos para garantizar idempotencia
         limpiar_datos_prueba(self.session, self.empleado.id)
     
@@ -478,10 +489,10 @@ class TestValidacionesDefault:
     def setup_method(self):
         self.session = Session(test_engine)
         self.empleado = self.session.scalar(
-            select(Empleado).where(Empleado.numero_empleado == "EMP004")
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
         )
         if not self.empleado:
-            raise Exception("Empleado EMP004 no encontrado")
+            raise Exception("Empleado EMP001 no encontrado")
         # Limpiar datos de prueba previos para garantizar idempotencia
         limpiar_datos_prueba(self.session, self.empleado.id)
     
@@ -495,7 +506,7 @@ class TestValidacionesDefault:
     
     def test_tolerancia_minutos_default(self):
         """Verifica que la tolerancia por default se aplica correctamente"""
-        # Verificar que EMP004 tiene turno con tolerancia definida
+        # Verificar que EMP001 tiene turno con tolerancia definida
         turno = self.session.scalar(
             select(TurnoHorario).where(
                 TurnoHorario.empleado_id == self.empleado.id,
@@ -525,6 +536,479 @@ class TestValidacionesDefault:
             print(f"[OK] Test horario_oficial_definido: PASSED")
         else:
             print("[SKIP] Test horario_oficial_definido: SKIPPED (no hay turno)")
+
+
+class TestCorreccionesManuales:
+    """Pruebas para correcciones manuales de RRHH"""
+    
+    def setup_method(self):
+        self.session = Session(test_engine)
+        self.empleado = self.session.scalar(
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
+        )
+        if not self.empleado:
+            raise Exception("Empleado EMP001 no encontrado")
+        # Limpiar datos de prueba previos para garantizar idempotencia
+        limpiar_datos_prueba(self.session, self.empleado.id)
+    
+    def teardown_method(self):
+        # Limpiar datos de prueba creados durante el test
+        try:
+            limpiar_datos_prueba(self.session, self.empleado.id)
+        except Exception:
+            self.session.rollback()
+        self.session.close()
+    
+    def test_correccion_horas_laboradas_positiva(self):
+        """Verifica que corrección positiva de horas laboradas se aplica"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base (8 horas = 480 minutos)
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Sin corrección: 480 minutos
+        resultado_sin = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado_sin["minutos_laborados"] == 480
+        
+        # Agregar corrección manual: +30 minutos
+        correccion = CorreccionManual(
+            empleado_id=self.empleado.id,
+            fecha=fecha,
+            tipo_correccion=TipoCorreccion.HORAS_LABORADAS,
+            minutos_agregados=30.5,  # 30.5 minutos decimales
+            motivo="Prueba corrección positiva",
+            autorizado_por=1,
+            fecha_registro=utc_now()
+        )
+        self.session.add(correccion)
+        self.session.commit()
+        
+        # Con corrección: 480 + 30.5 = 510.5 minutos
+        resultado_con = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado_con["minutos_laborados"] == 510.5
+        assert len(resultado_con["correcciones"]) == 1
+        print("[OK] Test correccion_horas_laboradas_positiva: PASSED")
+    
+    def test_correccion_horas_laboradas_negativa(self):
+        """Verifica que corrección negativa de horas laboradas se aplica"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar corrección manual: -15 minutos
+        correccion = CorreccionManual(
+            empleado_id=self.empleado.id,
+            fecha=fecha,
+            tipo_correccion=TipoCorreccion.HORAS_LABORADAS,
+            minutos_agregados=-15.0,
+            motivo="Prueba corrección negativa",
+            autorizado_por=1,
+            fecha_registro=utc_now()
+        )
+        self.session.add(correccion)
+        self.session.commit()
+        
+        # Con corrección: 480 - 15 = 465 minutos
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_laborados"] == 465.0
+        print("[OK] Test correccion_horas_laboradas_negativa: PASSED")
+    
+    def test_correccion_horas_extra(self):
+        """Verifica que corrección de horas extra se aplica"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar corrección manual de horas extra: +45 minutos
+        correccion = CorreccionManual(
+            empleado_id=self.empleado.id,
+            fecha=fecha,
+            tipo_correccion=TipoCorreccion.HORAS_EXTRA,
+            minutos_agregados=45.0,
+            motivo="Prueba corrección horas extra",
+            autorizado_por=1,
+            fecha_registro=utc_now()
+        )
+        self.session.add(correccion)
+        self.session.commit()
+        
+        # Verificar que se aplicó a minutos_extra
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 45.0
+        assert resultado["minutos_laborados"] == 480  # No afecta horas laboradas
+        print("[OK] Test correccion_horas_extra: PASSED")
+    
+    def test_bloque_horas_extra_sin_autorizacion(self):
+        """Verifica que bloque sin autorización no se cuenta en minutos_extra"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar bloque de horas extra SIN autorización
+        bloque = BloqueHorasExtra(
+            asistencia_id=asistencia.id,
+            tipo_bloque="DESPUES_FIN",
+            hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
+            hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
+            minutos_extra=60,
+            validacion_supervisor=False,
+            validacion_rrhh=False
+        )
+        self.session.add(bloque)
+        self.session.commit()
+        
+        # Verificar que NO se cuenta
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 0  # Sin autorización, no cuenta
+        print("[OK] Test bloque_horas_extra_sin_autorizacion: PASSED")
+    
+    def test_bloque_horas_extra_autorizacion_parcial(self):
+        """Verifica que bloque con autorización parcial no se cuenta"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar bloque con autorización solo de supervisor
+        bloque = BloqueHorasExtra(
+            asistencia_id=asistencia.id,
+            tipo_bloque="DESPUES_FIN",
+            hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
+            hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
+            minutos_extra=60,
+            validacion_supervisor=True,
+            validacion_rrhh=False
+        )
+        self.session.add(bloque)
+        self.session.commit()
+        
+        # Verificar que NO se cuenta (falta RRHH)
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 0
+        print("[OK] Test bloque_horas_extra_autorizacion_parcial: PASSED")
+    
+    def test_bloque_horas_extra_autorizacion_completa(self):
+        """Verifica que bloque con autorización completa se cuenta"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar bloque con autorización completa
+        bloque = BloqueHorasExtra(
+            asistencia_id=asistencia.id,
+            tipo_bloque="DESPUES_FIN",
+            hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
+            hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
+            minutos_extra=60,
+            validacion_supervisor=True,
+            validacion_rrhh=True
+        )
+        self.session.add(bloque)
+        self.session.commit()
+        
+        # Verificar que SÍ se cuenta
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 60
+        assert len(resultado["bloques_extra"]) == 1
+        assert resultado["bloques_extra"][0]["validacion_supervisor"] == True
+        assert resultado["bloques_extra"][0]["validacion_rrhh"] == True
+        print("[OK] Test bloque_horas_extra_autorizacion_completa: PASSED")
+
+
+def limpiar_ausencias_prueba(session, empleado_id, fecha=FECHA_PRUEBA):
+    """Elimina ausencias de prueba para garantizar idempotencia."""
+    ausencias = session.scalars(
+        select(RegistroAusencia).where(
+            RegistroAusencia.empleado_id == empleado_id,
+            RegistroAusencia.fecha_inicio <= fecha,
+            RegistroAusencia.fecha_fin >= fecha
+        )
+    ).all()
+    for a in ausencias:
+        session.delete(a)
+    session.commit()
+
+
+class TestRundownLogica:
+    """Pruebas integrales del rundown: duplicación de bloques, ausencias y reglas de cálculo."""
+    
+    def setup_method(self):
+        self.session = Session(test_engine)
+        self.empleado = self.session.scalar(
+            select(Empleado).where(Empleado.numero_empleado == "EMP001")
+        )
+        if not self.empleado:
+            raise Exception("Empleado EMP001 no encontrado")
+        limpiar_datos_prueba(self.session, self.empleado.id)
+        limpiar_ausencias_prueba(self.session, self.empleado.id)
+    
+    def teardown_method(self):
+        try:
+            limpiar_datos_prueba(self.session, self.empleado.id)
+            limpiar_ausencias_prueba(self.session, self.empleado.id)
+        except Exception:
+            self.session.rollback()
+        self.session.close()
+    
+    def test_bloques_no_se_duplican_al_recalcular(self):
+        """Verifica que recalcular bloques NO los duplica (fix de duplicación)."""
+        fecha = FECHA_PRUEBA
+        
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(19, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        # Llamar DOS veces para simular recalculo (p.ej. salida registrada 2 veces)
+        calcular_y_registrar_bloques_horas_extra(
+            self.session, asistencia,
+            datetime.combine(fecha, time(9, 0)),
+            datetime.combine(fecha, time(19, 0))
+        )
+        calcular_y_registrar_bloques_horas_extra(
+            self.session, asistencia,
+            datetime.combine(fecha, time(9, 0)),
+            datetime.combine(fecha, time(19, 0))
+        )
+        self.session.commit()
+        
+        bloques = self.session.scalars(
+            select(BloqueHorasExtra).where(BloqueHorasExtra.asistencia_id == asistencia.id)
+        ).all()
+        
+        # Debe haber solo 1 bloque DESPUES_FIN, no duplicado
+        bloques_despues = [b for b in bloques if b.tipo_bloque == "DESPUES_FIN"]
+        assert len(bloques_despues) == 1, f"Se esperaba 1 bloque, hay {len(bloques_despues)}"
+        # minutos_extra_calculados no debe estar duplicado
+        assert asistencia.minutos_extra_calculados == bloques_despues[0].minutos_extra
+        print("[OK] Test bloques_no_se_duplican_al_recalcular: PASSED")
+    
+    def test_vacaciones_cuenta_horas_laboradas(self):
+        """Verifica que un día de vacaciones aprobado cuenta como horas laboradas al 100%."""
+        fecha = FECHA_PRUEBA
+        
+        ausencia = RegistroAusencia(
+            empleado_id=self.empleado.id,
+            tipo_ausencia=TipoAusencia.VACACIONES,
+            fecha_inicio=fecha,
+            fecha_fin=fecha,
+            pagada=True,
+            porcentaje_aportacion=100,
+            motivo="Prueba vacaciones",
+            aprobado_rrhh=True,
+            fecha_registro=utc_now()
+        )
+        self.session.add(ausencia)
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        # Debe contar las horas del turno (EMP001 lunes tiene turno definido)
+        assert resultado["minutos_laborados"] > 0
+        assert resultado["minutos_extra"] == 0
+        assert resultado.get("ausencia") is not None
+        print("[OK] Test vacaciones_cuenta_horas_laboradas: PASSED")
+    
+    def test_incapacidad_parcial_cuenta_porcentaje(self):
+        """Verifica que una incapacidad al 50% cuenta la mitad de las horas del turno."""
+        fecha = FECHA_PRUEBA
+        
+        # Primero obtener horas completas con vacaciones para comparar
+        ausencia_inc = RegistroAusencia(
+            empleado_id=self.empleado.id,
+            tipo_ausencia=TipoAusencia.INCAPACIDAD,
+            fecha_inicio=fecha,
+            fecha_fin=fecha,
+            pagada=True,
+            porcentaje_aportacion=50,
+            motivo="Prueba incapacidad 50%",
+            aprobado_rrhh=True,
+            fecha_registro=utc_now()
+        )
+        self.session.add(ausencia_inc)
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        minutos_50 = resultado["minutos_laborados"]
+        
+        # Cambiar a 100% para comparar
+        ausencia_inc.porcentaje_aportacion = 100
+        self.session.commit()
+        resultado_100 = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        minutos_100 = resultado_100["minutos_laborados"]
+        
+        assert minutos_100 > 0
+        # 50% debe ser aproximadamente la mitad de 100%
+        assert abs(minutos_50 - minutos_100 // 2) <= 1, f"50%={minutos_50}, 100%={minutos_100}"
+        print("[OK] Test incapacidad_parcial_cuenta_porcentaje: PASSED")
+    
+    def test_permiso_no_pagado_no_cuenta(self):
+        """Verifica que un permiso NO pagado no cuenta horas laboradas."""
+        fecha = FECHA_PRUEBA
+        
+        ausencia = RegistroAusencia(
+            empleado_id=self.empleado.id,
+            tipo_ausencia=TipoAusencia.PERMISO,
+            fecha_inicio=fecha,
+            fecha_fin=fecha,
+            pagada=False,
+            porcentaje_aportacion=0,
+            motivo="Prueba permiso sin goce",
+            aprobado_rrhh=True,
+            fecha_registro=utc_now()
+        )
+        self.session.add(ausencia)
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_laborados"] == 0
+        print("[OK] Test permiso_no_pagado_no_cuenta: PASSED")
 
 
 class TestReportes:
@@ -669,6 +1153,8 @@ def ejecutar_todas_las_pruebas():
         "horas_extras": [],
         "visitas_pagadas": [],
         "validaciones_default": [],
+        "correcciones_manuales": [],
+        "rundown_logica": [],
         "reportes": [],
         "autorizacion_horas_extra": []
     }
@@ -774,49 +1260,138 @@ def ejecutar_todas_las_pruebas():
     
     print()
     
-    # Ejecutar pruebas de reportes
-    print("[TEST] EJECUTANDO PRUEBAS DE REPORTES...")
-    test_reportes = TestReportes()
+    # Ejecutar pruebas de correcciones manuales
+    print("[TEST] EJECUTANDO PRUEBAS DE CORRECCIONES MANUALES...")
+    test_correcciones = TestCorreccionesManuales()
     try:
-        test_reportes.test_reporte_horas_laboradas()
-        resultados["reportes"].append("reporte_horas_laboradas: [OK] PASSED")
+        test_correcciones.setup_method()
+        test_correcciones.test_correccion_horas_laboradas_positiva()
+        resultados["correcciones_manuales"].append("correccion_horas_laboradas_positiva: [OK] PASSED")
     except Exception as e:
-        resultados["reportes"].append(f"reporte_horas_laboradas: [FAIL] FAILED - {e}")
+        resultados["correcciones_manuales"].append(f"correccion_horas_laboradas_positiva: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
     
     try:
-        test_reportes.test_reporte_horas_extra()
-        resultados["reportes"].append("reporte_horas_extra: [OK] PASSED")
+        test_correcciones.setup_method()
+        test_correcciones.test_correccion_horas_laboradas_negativa()
+        resultados["correcciones_manuales"].append("correccion_horas_laboradas_negativa: [OK] PASSED")
     except Exception as e:
-        resultados["reportes"].append(f"reporte_horas_extra: [FAIL] FAILED - {e}")
+        resultados["correcciones_manuales"].append(f"correccion_horas_laboradas_negativa: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
     
     try:
-        test_reportes.test_reporte_asistencias()
-        resultados["reportes"].append("reporte_asistencias: [OK] PASSED")
+        test_correcciones.setup_method()
+        test_correcciones.test_correccion_horas_extra()
+        resultados["correcciones_manuales"].append("correccion_horas_extra: [OK] PASSED")
     except Exception as e:
-        resultados["reportes"].append(f"reporte_asistencias: [FAIL] FAILED - {e}")
+        resultados["correcciones_manuales"].append(f"correccion_horas_extra: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
     
     try:
-        test_reportes.test_reporte_bloques_horas_extra()
-        resultados["reportes"].append("reporte_bloques_horas_extra: [OK] PASSED")
+        test_correcciones.setup_method()
+        test_correcciones.test_bloque_horas_extra_sin_autorizacion()
+        resultados["correcciones_manuales"].append("bloque_horas_extra_sin_autorizacion: [OK] PASSED")
     except Exception as e:
-        resultados["reportes"].append(f"reporte_bloques_horas_extra: [FAIL] FAILED - {e}")
+        resultados["correcciones_manuales"].append(f"bloque_horas_extra_sin_autorizacion: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
+    
+    try:
+        test_correcciones.setup_method()
+        test_correcciones.test_bloque_horas_extra_autorizacion_parcial()
+        resultados["correcciones_manuales"].append("bloque_horas_extra_autorizacion_parcial: [OK] PASSED")
+    except Exception as e:
+        resultados["correcciones_manuales"].append(f"bloque_horas_extra_autorizacion_parcial: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
+    
+    try:
+        test_correcciones.setup_method()
+        test_correcciones.test_bloque_horas_extra_autorizacion_completa()
+        resultados["correcciones_manuales"].append("bloque_horas_extra_autorizacion_completa: [OK] PASSED")
+    except Exception as e:
+        resultados["correcciones_manuales"].append(f"bloque_horas_extra_autorizacion_completa: [FAIL] FAILED - {e}")
+    finally:
+        test_correcciones.teardown_method()
     
     print()
     
-    # Ejecutar pruebas de autorización horas extra
-    print("[TEST] EJECUTANDO PRUEBAS DE AUTORIZACION HORAS EXTRA...")
-    test_autorizacion = TestAutorizacionHorasExtra()
-    try:
-        test_autorizacion.test_autorizar_horas_extra()
-        resultados["autorizacion_horas_extra"].append("autorizar_horas_extra: [OK] PASSED")
-    except Exception as e:
-        resultados["autorizacion_horas_extra"].append(f"autorizar_horas_extra: [FAIL] FAILED - {e}")
+    # Ejecutar pruebas del rundown de lógica
+    print("[TEST] EJECUTANDO PRUEBAS DE RUNDOWN DE LOGICA...")
+    test_rundown = TestRundownLogica()
+    for nombre_test in [
+        "test_bloques_no_se_duplican_al_recalcular",
+        "test_vacaciones_cuenta_horas_laboradas",
+        "test_incapacidad_parcial_cuenta_porcentaje",
+        "test_permiso_no_pagado_no_cuenta",
+    ]:
+        try:
+            test_rundown.setup_method()
+            getattr(test_rundown, nombre_test)()
+            resultados["rundown_logica"].append(f"{nombre_test}: [OK] PASSED")
+        except Exception as e:
+            resultados["rundown_logica"].append(f"{nombre_test}: [FAIL] FAILED - {e}")
+        finally:
+            test_rundown.teardown_method()
     
+    print()
+    
+    # Ejecutar pruebas de reportes (requieren servidor en :8001 y login admin)
+    print("[TEST] EJECUTANDO PRUEBAS DE REPORTES...")
     try:
-        test_autorizacion.test_revocar_autorizacion_rrhh()
-        resultados["autorizacion_horas_extra"].append("revocar_autorizacion_rrhh: [OK] PASSED")
+        test_reportes = TestReportes()
     except Exception as e:
-        resultados["autorizacion_horas_extra"].append(f"revocar_autorizacion_rrhh: [FAIL] FAILED - {e}")
+        test_reportes = None
+        resultados["reportes"].append(f"[SKIP] Reportes omitidos (no se pudo autenticar/conectar al servidor): {e}")
+    if test_reportes is not None:
+        try:
+            test_reportes.test_reporte_horas_laboradas()
+            resultados["reportes"].append("reporte_horas_laboradas: [OK] PASSED")
+        except Exception as e:
+            resultados["reportes"].append(f"reporte_horas_laboradas: [FAIL] FAILED - {e}")
+        
+        try:
+            test_reportes.test_reporte_horas_extra()
+            resultados["reportes"].append("reporte_horas_extra: [OK] PASSED")
+        except Exception as e:
+            resultados["reportes"].append(f"reporte_horas_extra: [FAIL] FAILED - {e}")
+        
+        try:
+            test_reportes.test_reporte_asistencias()
+            resultados["reportes"].append("reporte_asistencias: [OK] PASSED")
+        except Exception as e:
+            resultados["reportes"].append(f"reporte_asistencias: [FAIL] FAILED - {e}")
+        
+        try:
+            test_reportes.test_reporte_bloques_horas_extra()
+            resultados["reportes"].append("reporte_bloques_horas_extra: [OK] PASSED")
+        except Exception as e:
+            resultados["reportes"].append(f"reporte_bloques_horas_extra: [FAIL] FAILED - {e}")
+    
+    print()
+    
+    # Ejecutar pruebas de autorización horas extra (requieren servidor en :8001 y login admin)
+    print("[TEST] EJECUTANDO PRUEBAS DE AUTORIZACION HORAS EXTRA...")
+    try:
+        test_autorizacion = TestAutorizacionHorasExtra()
+    except Exception as e:
+        test_autorizacion = None
+        resultados["autorizacion_horas_extra"].append(f"[SKIP] Autorizacion omitida (no se pudo autenticar/conectar al servidor): {e}")
+    if test_autorizacion is not None:
+        try:
+            test_autorizacion.test_autorizar_horas_extra()
+            resultados["autorizacion_horas_extra"].append("autorizar_horas_extra: [OK] PASSED")
+        except Exception as e:
+            resultados["autorizacion_horas_extra"].append(f"autorizar_horas_extra: [FAIL] FAILED - {e}")
+        
+        try:
+            test_autorizacion.test_revocar_autorizacion_rrhh()
+            resultados["autorizacion_horas_extra"].append("revocar_autorizacion_rrhh: [OK] PASSED")
+        except Exception as e:
+            resultados["autorizacion_horas_extra"].append(f"revocar_autorizacion_rrhh: [FAIL] FAILED - {e}")
     
     print()
     print("=" * 80)

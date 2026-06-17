@@ -190,7 +190,12 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
         hora_salida_con_tz = salida.hora_salida
         if hora_salida_con_tz.tzinfo is None:
             hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
-        salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
+        
+        # Si el regreso es después de la hora de salida oficial, calcular hasta la hora oficial
+        if hora_salida_oficial and now > hora_salida_oficial:
+            salida.minutos_descontados = int((hora_salida_oficial - hora_salida_con_tz).total_seconds() / 60)
+        else:
+            salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
     else:
         salida.minutos_descontados = 0
 
@@ -210,7 +215,12 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
             estado_registro=EstadoRegistro.VISITA_DESCANSO
         )
         db.add(nueva_visita)
+        db.flush()
         empleado.estado_actual = EstadoEmpleado.LABORANDO
+
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        from app.services import crear_visita
+        crear_visita(db, empleado.id, nueva_visita.id)
 
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
@@ -310,7 +320,12 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         hora_salida_con_tz = salida.hora_salida
         if hora_salida_con_tz.tzinfo is None:
             hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
-        salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
+        
+        # Si el regreso es después de la hora de salida oficial, calcular hasta la hora oficial
+        if hora_salida_oficial and now > hora_salida_oficial:
+            salida.minutos_descontados = int((hora_salida_oficial - hora_salida_con_tz).total_seconds() / 60)
+        else:
+            salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
     else:
         salida.minutos_descontados = 0
 
@@ -330,6 +345,10 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         db.add(nueva_visita)
         db.flush()
         empleado.estado_actual = EstadoEmpleado.LABORANDO
+
+        # Crear registro en tabla visitas para que aparezca en panel RRHH
+        from app.services import crear_visita
+        crear_visita(db, empleado.id, nueva_visita.id)
 
         # Registrar evento de regreso después de fin de turno
         db.add(EventoAsistencia(
@@ -520,6 +539,9 @@ def asignar_anden(id: int, payload: FilaExternoAsignar, db: Session = Depends(ge
     
     externo.anden_asignado = payload.anden_asignado
     externo.estado_fila = EstadoFila.ADENTRO_VERDE
+    # Registrar hora de entrada al almacén si no está registrada
+    if not externo.hora_entrada_almacen:
+        externo.hora_entrada_almacen = utc_now()
     db.commit()
     db.refresh(externo)
     return externo
@@ -934,8 +956,8 @@ def procesar_salidas_temporales_expiradas(db: Session = Depends(get_db)):
 
 
 @router.get("/visitas", response_model=list[VisitaOut])
-def obtener_visitas(fecha_inicio: str | None = None, fecha_fin: str | None = None, db: Session = Depends(get_db)):
-    """Obtiene todas las visitas en un rango de fechas"""
+def obtener_visitas(fecha_inicio: str | None = None, fecha_fin: str | None = None, empleado_id: int | None = None, db: Session = Depends(get_db)):
+    """Obtiene todas las visitas en un rango de fechas y opcionalmente por empleado"""
     from datetime import date
     
     query = select(Visita)
@@ -953,6 +975,12 @@ def obtener_visitas(fecha_inicio: str | None = None, fecha_fin: str | None = Non
             query = query.where(Visita.fecha_visita <= datetime.combine(fecha_fin_dt, datetime.max.time()))
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de fecha_fin inválido")
+    
+    if empleado_id:
+        query = query.where(Visita.empleado_id == empleado_id)
+    
+    # Solo mostrar visitas concluidas (con hora_fin)
+    query = query.where(Visita.hora_fin.is_not(None))
     
     visitas = db.scalars(query.order_by(Visita.fecha_visita.desc())).all()
     return visitas

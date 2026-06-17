@@ -214,6 +214,8 @@ class FilaExternoOut(BaseModel):
     estado_fila: EstadoFila
     anden_asignado: str | None
     hora_llegada: datetime
+    hora_entrada_almacen: datetime | None
+    hora_salida: datetime | None
 
 
 class AusenciaCreate(BaseModel):
@@ -269,3 +271,23 @@ class VisitaOut(BaseModel):
 class VisitaUpdate(BaseModel):
     estado: EstadoVisita
     motivo: str | None = None
+
+
+class CorreccionManualOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    empleado_id: int
+    fecha: date
+    tipo_correccion: str
+    minutos_agregados: float
+    motivo: str
+    autorizado_por: int
+    fecha_registro: datetime
+
+
+class CorreccionManualCreate(BaseModel):
+    empleado_id: int
+    fecha: date
+    tipo_correccion: str
+    minutos_agregados: float
+    motivo: str

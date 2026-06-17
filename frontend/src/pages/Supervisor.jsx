@@ -46,10 +46,10 @@ export function Supervisor() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  async function validarHoraExtra(asistenciaId) {
+  async function validarHoraExtra(bloqueId) {
     try {
-      await api.put(`/supervisor/incidencias/horas-extra/${asistenciaId}/validar`)
-      setMessage('✅ Horas extra validadas')
+      await api.put(`/supervisor/incidencias/horas-extra/bloque/${bloqueId}/validar`)
+      setMessage('✅ Bloque de horas extra validado')
       cargar()
     } catch (error) {
       setMessage('❌ Error: ' + (error.response?.data?.detail || 'No se pudo validar'))
@@ -121,7 +121,7 @@ export function Supervisor() {
 
   useEffect(() => { cargar() }, [])
 
-  const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+  const diasSemana = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
 
   const getUrgencia = (expira) => {
     if (!expira) return { color: '#64748b', label: 'Sin fecha', icon: '⏳' }
@@ -188,23 +188,25 @@ export function Supervisor() {
       <p style={{ color: '#94a3b8', marginTop: '0.5rem' }}>Todas las horas extra están validadas</p>
     </section> : <section style={{ display: 'grid', gap: '1rem' }}>
       {horasExtra.map((x) => (
-        <section key={x.id} className="panel" style={{ border: '2px solid #f97316', padding: '1.5rem', display: 'grid', gap: '1rem' }}>
+        <section key={x.bloque_id} className="panel" style={{ border: '2px solid #f97316', padding: '1.5rem', display: 'grid', gap: '1rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
             <div>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>Asistencia #{x.id}</h3>
-              <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>Colaborador ID: {x.empleado_id}</p>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: 0 }}>{x.nombre_empleado} #{x.numero_empleado}</h3>
+              <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: '0.25rem 0 0' }}>Bloque: {x.tipo_bloque === 'ANTES_INICIO' ? 'Antes del turno' : 'Después del turno'}</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(249,115,22,0.2)', padding: '0.5rem 1rem', borderRadius: '0.75rem' }}>
               <span style={{ fontSize: '1.5rem' }}>⏰</span>
-              <span style={{ fontWeight: 700, color: '#f97316' }}>{Math.floor(x.minutos_extra_calculados / 60)}h {x.minutos_extra_calculados % 60}m</span>
+              <span style={{ fontWeight: 700, color: '#f97316' }}>{Math.floor(x.minutos_extra / 60)}h {x.minutos_extra % 60}m</span>
             </div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <p style={{ fontSize: '0.875rem', color: '#94a3b8', margin: 0 }}>Fecha: {new Date(x.fecha_turno).toLocaleDateString()}</p>
-              <p style={{ fontSize: '0.875rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>Estado: {x.estado_registro}</p>
+              <p style={{ fontSize: '0.875rem', color: '#94a3b8', margin: '0.25rem 0 0' }}>
+                Horario: {new Date(x.hora_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(x.hora_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
             </div>
-            <button className="btn-green" onClick={() => validarHoraExtra(x.id)} style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}>✅ Validar horas extra</button>
+            <button className="btn-green" onClick={() => validarHoraExtra(x.bloque_id)} style={{ padding: '0.75rem 1.5rem', fontSize: '1rem' }}>✅ Validar bloque</button>
           </div>
         </section>
       ))}

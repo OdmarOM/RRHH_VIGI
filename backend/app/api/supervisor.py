@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.api.deps import require_roles
 from app.core.database import get_db
-from app.models import DetallePlantillaTurno, Empleado, EstadoEmpleado, PlantillaTurno, RegistroAsistencia, RolNombre, SupervisorDepartamento, TurnoHorario, UsuarioSistema
+from app.models import BloqueHorasExtra, DetallePlantillaTurno, Empleado, EstadoEmpleado, PlantillaTurno, RegistroAsistencia, RolNombre, SupervisorDepartamento, TurnoHorario, UsuarioSistema
 from app.schemas import AsistenciaOut, DetallePlantillaOut, EmpleadoOut, PlantillaTurnoOut, TurnoOut, TurnoCreate, TurnoDescansoUpdate
 from app.services import approve_late_pass
 
@@ -62,37 +62,67 @@ def incidencias(
     ]
 
 
-@router.get("/incidencias/horas-extra", response_model=list[AsistenciaOut])
+@router.get("/incidencias/horas-extra", response_model=list[dict])
 def incidencias_horas_extra(
     db: Session = Depends(get_db),
     user: UsuarioSistema = Depends(require_roles(RolNombre.SUPERVISOR)),
 ):
+    """Lista los bloques de horas extra pendientes de validación por el supervisor
+    para los colaboradores de sus departamentos."""
     departamentos = select(SupervisorDepartamento.departamento_id).where(SupervisorDepartamento.usuario_id == user.id)
-    empleados = select(Empleado.id).where(Empleado.departamento_id.in_(departamentos))
-    return db.scalars(
-        select(RegistroAsistencia)
-        .where(RegistroAsistencia.empleado_id.in_(empleados), RegistroAsistencia.minutos_extra_calculados > 0, RegistroAsistencia.validacion_supervisor.is_(False))
-        .order_by(RegistroAsistencia.fecha_turno.desc())
+    empleados_ids = db.scalars(select(Empleado.id).where(Empleado.departamento_id.in_(departamentos))).all()
+
+    # Obtener bloques pendientes de validación de supervisor unidos con asistencia y empleado
+    resultados = db.execute(
+        select(BloqueHorasExtra, RegistroAsistencia, Empleado)
+        .join(RegistroAsistencia, BloqueHorasExtra.asistencia_id == RegistroAsistencia.id)
+        .join(Empleado, RegistroAsistencia.empleado_id == Empleado.id)
+        .where(
+            RegistroAsistencia.empleado_id.in_(empleados_ids),
+            BloqueHorasExtra.validacion_supervisor.is_(False)
+        )
+        .order_by(RegistroAsistencia.fecha_turno.desc(), BloqueHorasExtra.hora_inicio.asc())
     ).all()
 
+    return [
+        {
+            "bloque_id": bloque.id,
+            "asistencia_id": asistencia.id,
+            "empleado_id": asistencia.empleado_id,
+            "nombre_empleado": empleado.nombre_completo,
+            "numero_empleado": empleado.numero_empleado,
+            "fecha_turno": asistencia.fecha_turno,
+            "tipo_bloque": bloque.tipo_bloque,
+            "hora_inicio": bloque.hora_inicio,
+            "hora_fin": bloque.hora_fin,
+            "minutos_extra": bloque.minutos_extra,
+            "validacion_supervisor": bloque.validacion_supervisor,
+            "validacion_rrhh": bloque.validacion_rrhh
+        }
+        for bloque, asistencia, empleado in resultados
+    ]
 
-@router.put("/incidencias/horas-extra/{asistencia_id}/validar")
-def validar_horas_extra(
-    asistencia_id: int,
+
+@router.put("/incidencias/horas-extra/bloque/{bloque_id}/validar")
+def validar_bloque_horas_extra(
+    bloque_id: int,
     db: Session = Depends(get_db),
     user: UsuarioSistema = Depends(require_roles(RolNombre.SUPERVISOR)),
 ):
+    """El supervisor valida un bloque individual de horas extra de un colaborador
+    de su departamento. RRHH terminará de validar desde el panel de administración."""
     departamentos = select(SupervisorDepartamento.departamento_id).where(SupervisorDepartamento.usuario_id == user.id)
     empleados_ids = db.scalars(select(Empleado.id).where(Empleado.departamento_id.in_(departamentos))).all()
-    
-    asistencia = db.get(RegistroAsistencia, asistencia_id)
-    if not asistencia:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
-    
-    if asistencia.empleado_id not in empleados_ids:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes permiso para validar este registro")
-    
-    asistencia.validacion_supervisor = True
+
+    bloque = db.get(BloqueHorasExtra, bloque_id)
+    if not bloque:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bloque de horas extra no encontrado")
+
+    asistencia = db.get(RegistroAsistencia, bloque.asistencia_id)
+    if not asistencia or asistencia.empleado_id not in empleados_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tienes permiso para validar este bloque")
+
+    bloque.validacion_supervisor = True
     db.commit()
     return {"ok": True}
 

@@ -290,6 +290,7 @@ class FilaExterno(Base):
     estado_fila: Mapped[EstadoFila] = mapped_column(Enum(EstadoFila), default=EstadoFila.ESPERA_AMARILLO, nullable=False)
     anden_asignado: Mapped[str | None] = mapped_column(String(40), nullable=True)
     hora_llegada: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hora_entrada_almacen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hora_salida: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     latitud: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitud: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -303,3 +304,26 @@ class EvidenciaFotografica(Base):
     referencia_tipo: Mapped[str] = mapped_column(String(50), nullable=False)  # 'fila_externo' u otros
     ruta_archivo: Mapped[str] = mapped_column(String(255), nullable=False)
     fecha_captura: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TipoCorreccion(StrEnum):
+    HORAS_LABORADAS = "Horas_Laboradas"
+    HORAS_EXTRA = "Horas_Extra"
+    INCIDENCIA = "Incidencia"
+    PERMISO = "Permiso"
+
+
+class CorreccionManual(Base):
+    __tablename__ = "correcciones_manuales"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    empleado_id: Mapped[int] = mapped_column(ForeignKey("empleados.id"), nullable=False, index=True)
+    fecha: Mapped[date] = mapped_column(Date, nullable=False)
+    tipo_correccion: Mapped[TipoCorreccion] = mapped_column(Enum(TipoCorreccion), nullable=False)
+    minutos_agregados: Mapped[float] = mapped_column(Float, nullable=False)  # Minutos a agregar (positivo) o restar (negativo), puede ser decimal
+    motivo: Mapped[str] = mapped_column(String(200), nullable=False)
+    autorizado_por: Mapped[int] = mapped_column(ForeignKey("usuarios_sistema.id"), nullable=False)
+    fecha_registro: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    empleado: Mapped[Empleado] = relationship()
+    autorizador: Mapped[UsuarioSistema] = relationship(foreign_keys=[autorizado_por])

@@ -25,11 +25,20 @@ export function Admin() {
   const [supervisoresDepartamentos, setSupervisoresDepartamentos] = useState([])
   const [roles, setRoles] = useState([])
   const [ausencias, setAusencias] = useState([])
+  const [filtroAusenciasFecha, setFiltroAusenciasFecha] = useState('')
+  const [filtroAusenciasEmpleado, setFiltroAusenciasEmpleado] = useState('')
   const [reporteHoras, setReporteHoras] = useState([])
   const [reporteHorasExtra, setReporteHorasExtra] = useState([])
   const [reporteAsistencias, setReporteAsistencias] = useState([])
   const [visitas, setVisitas] = useState([])
   const [filtroVisitas, setFiltroVisitas] = useState('')
+  const [filtroVisitasFechaInicio, setFiltroVisitasFechaInicio] = useState('')
+  const [filtroVisitasFechaFin, setFiltroVisitasFechaFin] = useState('')
+  const [filtroVisitasEmpleado, setFiltroVisitasEmpleado] = useState('')
+  const [filtroCorreccionesEmpleado, setFiltroCorreccionesEmpleado] = useState('')
+  const [filtroCorreccionesFecha, setFiltroCorreccionesFecha] = useState('')
+  const [correccionesManuales, setCorreccionesManuales] = useState([])
+  const [correccionForm, setCorreccionForm] = useState({ empleado_id: '', empleado_busqueda: '', fecha: '', tipo_correccion: 'Horas_Laboradas', minutos_agregados: 0, motivo: '' })
   const [horasExtraPendientes, setHorasExtraPendientes] = useState([])
   const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
   const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '', corte_semanal: false })
@@ -73,15 +82,14 @@ export function Admin() {
 
   async function cargar() {
     try {
-      const [empData, turnData, plantData, deptData, userData, supDeptData, rolesData, ausData] = await Promise.all([
+      const [empData, turnData, plantData, deptData, userData, supDeptData, rolesData] = await Promise.all([
         api.get('/admin/empleados'),
         api.get('/admin/turnos'),
         api.get('/admin/plantillas-turnos'),
         api.get('/admin/departamentos'),
         api.get('/admin/usuarios-sistema'),
         api.get('/admin/supervisores-departamentos'),
-        api.get('/admin/roles'),
-        api.get('/admin/ausencias')
+        api.get('/admin/roles')
       ])
       setEmpleados(empData.data)
       setTurnos(turnData.data)
@@ -90,15 +98,75 @@ export function Admin() {
       setUsuariosSistema(userData.data)
       setSupervisoresDepartamentos(supDeptData.data)
       setRoles(rolesData.data)
-      setAusencias(ausData.data)
+      cargarAusencias()
       cargarVisitas()
       cargarHorasExtraPendientes()
+      cargarCorreccionesManuales()
     } catch {}
+  }
+
+  async function cargarAusencias() {
+    try {
+      const params = {}
+      if (filtroAusenciasFecha) params.fecha = filtroAusenciasFecha
+      if (filtroAusenciasEmpleado) params.empleado_id = filtroAusenciasEmpleado
+      const { data } = await api.get('/admin/ausencias', { params })
+      setAusencias(data)
+    } catch {}
+  }
+
+  async function cargarCorreccionesManuales() {
+    try {
+      const params = {}
+      if (filtroCorreccionesFecha) params.fecha = filtroCorreccionesFecha
+      const { data } = await api.get('/admin/correcciones-manuales', { params })
+      // Filtrar por nombre o número de empleado en el frontend
+      let filtradas = data
+      if (filtroCorreccionesEmpleado) {
+        const busqueda = filtroCorreccionesEmpleado.toLowerCase()
+        filtradas = data.filter(c => {
+          const emp = empleados.find(e => e.id === c.empleado_id)
+          if (emp) {
+            return emp.nombre_completo.toLowerCase().includes(busqueda) || 
+                   emp.numero_empleado.toString().includes(busqueda)
+          }
+          return false
+        })
+      }
+      setCorreccionesManuales(filtradas)
+    } catch {}
+  }
+
+  async function crearCorreccionManual() {
+    try {
+      await api.post('/admin/correcciones-manuales', correccionForm)
+      setMessage('✅ Corrección manual agregada')
+      setCorreccionForm({ empleado_id: '', empleado_busqueda: '', fecha: '', tipo_correccion: 'Horas_Laboradas', minutos_agregados: 0, motivo: '' })
+      cargarCorreccionesManuales()
+    } catch {
+      setMessage('❌ Error al agregar corrección manual')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function eliminarCorreccionManual(correccionId) {
+    try {
+      await api.delete(`/admin/correcciones-manuales/${correccionId}`)
+      setMessage('✅ Corrección manual eliminada')
+      cargarCorreccionesManuales()
+    } catch {
+      setMessage('❌ Error al eliminar corrección manual')
+    }
+    setTimeout(() => setMessage(''), 3000)
   }
 
   async function cargarVisitas() {
     try {
-      const { data } = await api.get('/caseta/visitas')
+      const params = {}
+      if (filtroVisitasFechaInicio) params.fecha_inicio = filtroVisitasFechaInicio
+      if (filtroVisitasFechaFin) params.fecha_fin = filtroVisitasFechaFin
+      if (filtroVisitasEmpleado) params.empleado_id = filtroVisitasEmpleado
+      const { data } = await api.get('/caseta/visitas', { params })
       setVisitas(data)
     } catch {}
   }
@@ -349,8 +417,8 @@ export function Admin() {
   async function crearAusencia(event) {
     event.preventDefault()
     try {
-      await api.post('/admin/ausencias', { 
-        ...ausenciaForm, 
+      await api.post('/admin/ausencias', {
+        ...ausenciaForm,
         empleado_id: Number(ausenciaForm.empleado_id),
         fecha_inicio: new Date(ausenciaForm.fecha_inicio).toISOString().split('T')[0],
         fecha_fin: new Date(ausenciaForm.fecha_fin).toISOString().split('T')[0],
@@ -358,7 +426,7 @@ export function Admin() {
       })
       setMessage('✅ Ausencia creada')
       setAusenciaForm({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, porcentaje_aportacion: 100, motivo: '' })
-      cargar()
+      cargarAusencias()
     } catch {
       setMessage('❌ Error al crear ausencia')
     }
@@ -369,7 +437,7 @@ export function Admin() {
     try {
       await api.put(`/admin/ausencias/${ausenciaId}/aprobar`)
       setMessage('✅ Ausencia aprobada')
-      cargar()
+      cargarAusencias()
     } catch {
       setMessage('❌ Error al aprobar ausencia')
     }
@@ -380,7 +448,7 @@ export function Admin() {
     try {
       await api.delete(`/admin/ausencias/${ausenciaId}`)
       setMessage('✅ Ausencia eliminada')
-      cargar()
+      cargarAusencias()
     } catch {
       setMessage('❌ Error al eliminar ausencia')
     }
@@ -443,6 +511,26 @@ export function Admin() {
       await api.put(`/admin/incidencias/horas-extra/${asistencia_id}/aprobar-rrhh`)
       setReporteHorasExtra(reporteHorasExtra.map(r => r.id === asistencia_id ? { ...r, validado_rrhh: true } : r))
       setMessage('✅ Horas extra aprobadas por RRHH')
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
+    }
+  }
+
+  async function aprobarBloqueHorasExtraSupervisor(bloque_id) {
+    try {
+      await api.put(`/admin/bloques-horas-extra/${bloque_id}/aprobar-supervisor`)
+      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validacion_supervisor: true } : r))
+      setMessage('✅ Bloque de horas extra aprobado por supervisor')
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
+    }
+  }
+
+  async function aprobarBloqueHorasExtraRRHH(bloque_id) {
+    try {
+      await api.put(`/admin/bloques-horas-extra/${bloque_id}/aprobar-rrhh`)
+      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validacion_rrhh: true, autorizado_completo: true } : r))
+      setMessage('✅ Bloque de horas extra aprobado por RRHH')
     } catch (err) {
       setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
     }
@@ -793,6 +881,7 @@ export function Admin() {
           <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📅 Turnos y Plantillas</button>
           <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏖️ Ausencias</button>
           <button className={tab === 'visitas' ? 'btn' : 'card'} onClick={() => setTab('visitas')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🚪 Visitas</button>
+          <button className={tab === 'correcciones' ? 'btn' : 'card'} onClick={() => setTab('correcciones')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>✏️ Correcciones</button>
           <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🏢 Departamentos</button>
           <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>🔐 Usuarios</button>
           <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '1rem', fontSize: '1rem', textAlign: 'left' }}>📊 Reportes</button>
@@ -803,6 +892,7 @@ export function Admin() {
           <button className={tab === 'turnos' ? 'btn' : 'card'} onClick={() => setTab('turnos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📅</button>
           <button className={tab === 'ausencias' ? 'btn' : 'card'} onClick={() => setTab('ausencias')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏖️</button>
           <button className={tab === 'visitas' ? 'btn' : 'card'} onClick={() => setTab('visitas')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🚪</button>
+          <button className={tab === 'correcciones' ? 'btn' : 'card'} onClick={() => setTab('correcciones')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✏️</button>
           <button className={tab === 'departamentos' ? 'btn' : 'card'} onClick={() => setTab('departamentos')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🏢</button>
           <button className={tab === 'usuarios' ? 'btn' : 'card'} onClick={() => setTab('usuarios')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🔐</button>
           <button className={tab === 'reportes' ? 'btn' : 'card'} onClick={() => setTab('reportes')} style={{ width: '100%', padding: '0.75rem', fontSize: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📊</button>
@@ -1537,6 +1627,37 @@ export function Admin() {
 
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Ausencias Registradas</h3>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <input
+              type="date"
+              className="input"
+              value={filtroAusenciasFecha}
+              onChange={e => setFiltroAusenciasFecha(e.target.value)}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <select
+              value={filtroAusenciasEmpleado}
+              onChange={e => setFiltroAusenciasEmpleado(e.target.value)}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem', minWidth: '200px' }}
+            >
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.numero_empleado} - {emp.nombre_completo}</option>
+              ))}
+            </select>
+            <button
+              onClick={cargarAusencias}
+              style={{ padding: '0.5rem 1rem', background: '#3b82f6', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Filtrar
+            </button>
+            <button
+              onClick={() => { setFiltroAusenciasFecha(''); setFiltroAusenciasEmpleado(''); cargarAusencias(); }}
+              style={{ padding: '0.5rem 1rem', background: '#64748b', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Limpiar
+            </button>
+          </div>
           {ausencias.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay ausencias registradas</p> : (
             <table className="table">
               <thead>
@@ -1636,6 +1757,44 @@ export function Admin() {
 
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Visitas (Entradas Fuera de Horario)</h3>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <input
+              type="date"
+              value={filtroVisitasFechaInicio}
+              onChange={e => setFiltroVisitasFechaInicio(e.target.value)}
+              placeholder="Fecha inicio"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <input
+              type="date"
+              value={filtroVisitasFechaFin}
+              onChange={e => setFiltroVisitasFechaFin(e.target.value)}
+              placeholder="Fecha fin"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <select
+              value={filtroVisitasEmpleado}
+              onChange={e => setFiltroVisitasEmpleado(e.target.value)}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem', minWidth: '200px' }}
+            >
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.numero_empleado} - {emp.nombre_completo}</option>
+              ))}
+            </select>
+            <button
+              onClick={cargarVisitas}
+              style={{ padding: '0.5rem 1rem', background: '#3b82f6', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Filtrar
+            </button>
+            <button
+              onClick={() => { setFiltroVisitasFechaInicio(''); setFiltroVisitasFechaFin(''); setFiltroVisitasEmpleado(''); cargarVisitas(); }}
+              style={{ padding: '0.5rem 1rem', background: '#64748b', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Limpiar
+            </button>
+          </div>
           {visitas.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay visitas registradas</p> : (
             <table className="table">
               <thead>
@@ -1694,6 +1853,146 @@ export function Admin() {
                             </>
                           )}
                         </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>}
+
+      {tab === 'correcciones' && <section style={{ display: 'grid', gap: '1.5rem' }}>
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Agregar Corrección Manual</h3>
+          <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                placeholder="Buscar colaborador (nombre o número)"
+                value={correccionForm.empleado_busqueda}
+                onChange={e => setCorreccionForm({ ...correccionForm, empleado_busqueda: e.target.value })}
+                style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem', width: '100%' }}
+              />
+              {correccionForm.empleado_busqueda && correccionForm.empleado_busqueda.length > 0 && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#1e293b', border: '1px solid #334155', borderRadius: '0.375rem', maxHeight: '200px', overflowY: 'auto', zIndex: 10 }}>
+                  {empleados
+                    .filter(emp => 
+                      emp.nombre_completo.toLowerCase().includes(correccionForm.empleado_busqueda.toLowerCase()) ||
+                      emp.numero_empleado.toString().includes(correccionForm.empleado_busqueda)
+                    )
+                    .slice(0, 10)
+                    .map(emp => (
+                      <div
+                        key={emp.id}
+                        onClick={() => setCorreccionForm({ ...correccionForm, empleado_id: emp.id, empleado_busqueda: `${emp.numero_empleado} - ${emp.nombre_completo}` })}
+                        style={{ padding: '0.5rem', cursor: 'pointer', borderBottom: '1px solid #334155' }}
+                        onMouseEnter={e => e.target.style.background = '#334155'}
+                        onMouseLeave={e => e.target.style.background = '#1e293b'}
+                      >
+                        {emp.numero_empleado} - {emp.nombre_completo}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+            <input
+              type="date"
+              value={correccionForm.fecha}
+              onChange={e => setCorreccionForm({ ...correccionForm, fecha: e.target.value })}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <select
+              value={correccionForm.tipo_correccion}
+              onChange={e => setCorreccionForm({ ...correccionForm, tipo_correccion: e.target.value })}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            >
+              <option value="Horas_Laboradas">Horas Laboradas</option>
+              <option value="Horas_Extra">Horas Extra</option>
+              <option value="Incidencia">Incidencia</option>
+              <option value="Permiso">Permiso</option>
+            </select>
+            <input
+              type="number"
+              step="0.01"
+              value={correccionForm.minutos_agregados}
+              onChange={e => setCorreccionForm({ ...correccionForm, minutos_agregados: parseFloat(e.target.value) || 0 })}
+              placeholder="Minutos (ej: 30 para 30 min, -15 para restar 15 min)"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <input
+              type="text"
+              value={correccionForm.motivo}
+              onChange={e => setCorreccionForm({ ...correccionForm, motivo: e.target.value })}
+              placeholder="Motivo"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <button
+              onClick={crearCorreccionManual}
+              style={{ padding: '0.5rem 1rem', background: '#3b82f6', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Agregar Corrección
+            </button>
+          </div>
+        </div>
+
+        <div className="panel" style={{ padding: '1rem' }}>
+          <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Historial de Correcciones Manuales</h3>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              placeholder="Buscar colaborador (nombre o número)"
+              value={filtroCorreccionesEmpleado}
+              onChange={e => setFiltroCorreccionesEmpleado(e.target.value)}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem', minWidth: '250px' }}
+            />
+            <input
+              type="date"
+              value={filtroCorreccionesFecha}
+              onChange={e => setFiltroCorreccionesFecha(e.target.value)}
+              placeholder="Fecha asignada"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <button
+              onClick={cargarCorreccionesManuales}
+              style={{ padding: '0.5rem 1rem', background: '#3b82f6', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Filtrar
+            </button>
+            <button
+              onClick={() => { setFiltroCorreccionesEmpleado(''); setFiltroCorreccionesFecha(''); cargarCorreccionesManuales(); }}
+              style={{ padding: '0.5rem 1rem', background: '#64748b', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Limpiar
+            </button>
+          </div>
+          {correccionesManuales.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay correcciones manuales registradas</p> : (
+            <table className="table">
+              <thead>
+                <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha Asignada</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tipo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Motivo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha Registro</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {correccionesManuales.map(c => {
+                  const emp = empleados.find(e => e.id === c.empleado_id)
+                  return (
+                    <tr key={c.id} style={{ borderBottom: '1px solid #1e293b' }}>
+                      <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
+                      <td style={{ padding: '0.75rem' }}>{c.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{c.tipo_correccion}</td>
+                      <td style={{ padding: '0.75rem' }}>{c.minutos_agregados > 0 ? `+${c.minutos_agregados}` : c.minutos_agregados}</td>
+                      <td style={{ padding: '0.75rem' }}>{c.motivo}</td>
+                      <td style={{ padding: '0.75rem' }}>{new Date(c.fecha_registro).toLocaleString()}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <button onClick={() => eliminarCorreccionManual(c.id)} className="btn-sm btn-sm-red">Eliminar</button>
                       </td>
                     </tr>
                   )
@@ -1878,7 +2177,9 @@ export function Admin() {
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Laboradas</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos Permiso</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Correcciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1891,7 +2192,19 @@ export function Admin() {
                       <td style={{ padding: '0.75rem' }}>{r.hora_entrada ? new Date(r.hora_entrada).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
                       <td style={{ padding: '0.75rem' }}>{r.hora_salida ? new Date(r.hora_salida).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
                       <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_laboradas}h</td>
+                      <td style={{ padding: '0.75rem', color: r.minutos_descanso > 0 ? '#eab308' : '#94a3b8' }}>{r.minutos_descanso || 0} min</td>
                       <td style={{ padding: '0.75rem' }}>{r.estado}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        {r.correcciones_manuales && r.correcciones_manuales.length > 0 ? (
+                          <div style={{ fontSize: '0.75rem' }}>
+                            {r.correcciones_manuales.map((c, idx) => (
+                              <div key={idx} style={{ color: c.tipo === 'Permiso' ? '#eab308' : (c.minutos > 0 ? '#22c55e' : '#ef4444') }}>
+                                {c.tipo}: {c.tipo === 'Permiso' ? c.minutos : (c.minutos > 0 ? '+' : '') + c.minutos} min
+                              </div>
+                            ))}
+                          </div>
+                        ) : '-'}
+                      </td>
                     </tr>
                   )
                 })}
@@ -1934,10 +2247,15 @@ export function Admin() {
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos Extra</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado Supervisor</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Autorizado RRHH</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tipo Bloque</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Inicio - Fin</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Minutos</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Supervisor</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>RRHH</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Correcciones</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1947,11 +2265,44 @@ export function Admin() {
                     <tr key={i} style={{ borderBottom: '1px solid #1e293b' }}>
                       <td style={{ padding: '0.75rem' }}>{emp ? emp.nombre_completo : r.empleado_id}</td>
                       <td style={{ padding: '0.75rem' }}>{r.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.tipo}</td>
+                      <td style={{ padding: '0.75rem', fontSize: '0.75rem' }}>
+                        {new Date(r.hora_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(r.hora_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </td>
                       <td style={{ padding: '0.75rem' }}>{r.minutos_extra} min</td>
                       <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_extra}h</td>
-                      <td style={{ padding: '0.75rem' }}>{r.validado_supervisor ? '✅' : '❌'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.validacion_supervisor ? '✅' : '❌'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.validacion_rrhh ? '✅' : '❌'}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        {r.autorizacion_horas_extra_rrhh ? '✅ Autorizado' : '⏳ Pendiente'}
+                        {r.autorizado_completo ? (
+                          <span style={{ color: '#22c55e', fontWeight: 700 }}>✅ Autorizado</span>
+                        ) : (
+                          <span style={{ color: '#eab308' }}>⏳ Pendiente</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '0.75rem' }}>
+                        {r.correcciones_manuales && r.correcciones_manuales.length > 0 ? (
+                          <div style={{ fontSize: '0.75rem' }}>
+                            {r.correcciones_manuales.map((c, idx) => (
+                              <div key={idx} style={{ color: c.tipo === 'Permiso' ? '#eab308' : (c.minutos > 0 ? '#22c55e' : '#ef4444') }}>
+                                {c.tipo}: {c.tipo === 'Permiso' ? c.minutos : (c.minutos > 0 ? '+' : '') + c.minutos} min
+                              </div>
+                            ))}
+                          </div>
+                        ) : '-'}
+                      </td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                          {!r.validacion_supervisor && (
+                            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Esperando supervisor</span>
+                          )}
+                          {r.validacion_supervisor && !r.validacion_rrhh && (
+                            <button onClick={() => aprobarBloqueHorasExtraRRHH(r.bloque_id)} className="btn-sm btn-sm-green">✓ Validar RRHH</button>
+                          )}
+                          {r.validacion_supervisor && r.validacion_rrhh && (
+                            <span style={{ fontSize: '0.75rem', color: '#22c55e' }}>Completado</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -2042,6 +2393,7 @@ export function Admin() {
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Entrada</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Salida</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Estado</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Correcciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -2054,6 +2406,17 @@ export function Admin() {
                       <td style={{ padding: '0.75rem' }}>{r.hora_entrada ? new Date(r.hora_entrada).toLocaleTimeString() : '-'}</td>
                       <td style={{ padding: '0.75rem' }}>{r.hora_salida ? new Date(r.hora_salida).toLocaleTimeString() : '-'}</td>
                       <td style={{ padding: '0.75rem' }}>{r.estado_registro || '-'}</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        {r.correcciones_manuales && r.correcciones_manuales.length > 0 ? (
+                          <div style={{ fontSize: '0.75rem' }}>
+                            {r.correcciones_manuales.map((c, idx) => (
+                              <div key={idx} style={{ color: c.tipo === 'Permiso' ? '#eab308' : (c.minutos > 0 ? '#22c55e' : '#ef4444') }}>
+                                {c.tipo}: {c.tipo === 'Permiso' ? c.minutos : (c.minutos > 0 ? '+' : '') + c.minutos} min
+                              </div>
+                            ))}
+                          </div>
+                        ) : '-'}
+                      </td>
                     </tr>
                   )
                 })}

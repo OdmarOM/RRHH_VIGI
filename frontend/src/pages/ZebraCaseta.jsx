@@ -13,6 +13,7 @@ export function ZebraCaseta() {
   const [modalExterno, setModalExterno] = useState({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })
   const [modalConfirmacionSalida, setModalConfirmacionSalida] = useState({ visible: false, id: null, nombre: '' })
   const [modalEvidencia, setModalEvidencia] = useState({ visible: false, externoId: null, fotos: [] })
+  const [creandoExterno, setCreandoExterno] = useState(false)
   const inputRef = useRef(null)
 
   const OBSERVACIONES_OPCIONES = ['Sin Uniforme', 'Sin Gafete', 'EPP Incompleto', 'Otro']
@@ -108,7 +109,8 @@ export function ZebraCaseta() {
   }
 
   async function crearExterno() {
-    if (!modalExterno.nombre.trim()) return
+    if (!modalExterno.nombre.trim() || creandoExterno) return
+    setCreandoExterno(true)
     try {
       const formData = new FormData()
       formData.append('tipo_visitante', modalExterno.tipo)
@@ -128,6 +130,8 @@ export function ZebraCaseta() {
       cargarExternos()
     } catch (err) {
       console.error('Error al crear externo:', err)
+    } finally {
+      setCreandoExterno(false)
     }
   }
 
@@ -355,6 +359,7 @@ export function ZebraCaseta() {
             </div>}
             <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
               🕐 Llegada: {new Date(x.hora_llegada).toLocaleTimeString()}
+              {x.hora_entrada_almacen && <span> • Entrada almacén: {new Date(x.hora_entrada_almacen).toLocaleTimeString()}</span>}
               {x.hora_salida && <span> • Salida: {new Date(x.hora_salida).toLocaleTimeString()}</span>}
             </div>
           </div>
@@ -449,7 +454,7 @@ export function ZebraCaseta() {
           )}
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn-green" onClick={crearExterno} style={{ flex: 1 }}>Registrar</button>
+          <button className="btn-green" onClick={crearExterno} disabled={creandoExterno} style={{ flex: 1, opacity: creandoExterno ? 0.5 : 1 }}>{creandoExterno ? 'Registrando...' : 'Registrar'}</button>
           <button onClick={() => setModalExterno({ visible: false, tipo: 'Externo', nombre: '', chofer: '', placa: '', fotos: [] })} style={{ flex: 1, padding: '0.75rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer' }}>Cancelar</button>
         </div>
       </div>
