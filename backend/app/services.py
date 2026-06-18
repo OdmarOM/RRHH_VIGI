@@ -516,6 +516,7 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         tolerancia_entrada_previa = turno.get("tolerancia_entrada_previa_minutos", 0)
     
     minutos_laborados = 0
+    minutos_extra = 0
     minutos_descanso = 0
     turno_cumplido = False  # Rastrear si ya se cumplió el turno
     turno_terminado_por_permiso = False  # Rastrear si el turno terminó por permiso sin regreso
@@ -717,15 +718,45 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         elif correccion.tipo_correccion.value == "Permiso":
             # Los permisos descuentan de las horas laboradas (RRHH agrega minutos positivos que se restan)
             minutos_laborados -= correccion.minutos_agregados
+        elif correccion.tipo_correccion.value == "Horas_Extra":
+            # Las correcciones de horas extra se suman a minutos_extra
+            minutos_extra += correccion.minutos_agregados
     
-    # Restar minutos de descanso (salidas temporales por permiso) de las horas laboradas
-    # Solo si el turno terminó por permiso sin regreso (los minutos ya no se contaron en los bloques)
-    if turno_terminado_por_permiso:
-        minutos_laborados -= minutos_descanso
+    # NO restar minutos de descanso (salidas temporales por permiso) de las horas laboradas
+    # Los minutos de permiso se muestran en minutos_descanso pero no se restan
+    # (el usuario quiere ver las horas laboradas completas y los minutos de permiso por separado)
+    
+    # Sumar bloques de horas extra autorizados
+    bloques_autorizados = db.scalars(
+        select(BloqueHorasExtra).where(
+            BloqueHorasExtra.asistencia_id.in_(
+                select(RegistroAsistencia.id).where(
+                    RegistroAsistencia.empleado_id == empleado_id,
+                    RegistroAsistencia.fecha_turno == fecha
+                )
+            ),
+            BloqueHorasExtra.validacion_rrhh == True  # Solo requiere validación de RRHH
+        )
+    ).all()
+    # Si hay bloques autorizados en la base de datos, usar esos en lugar de los detectados automáticamente
+    if bloques_autorizados:
+        bloques_extra = []  # Limpiar bloques detectados automáticamente
+        for bloque in bloques_autorizados:
+            minutos_extra += bloque.minutos_extra
+            bloques_extra.append({
+                "tipo": bloque.tipo_bloque,
+                "hora_inicio": bloque.hora_inicio.isoformat() if bloque.hora_inicio else None,
+                "hora_fin": bloque.hora_fin.isoformat() if bloque.hora_fin else None,
+                "minutos": bloque.minutos_extra,
+                "validacion_supervisor": bloque.validacion_supervisor,
+                "validacion_rrhh": bloque.validacion_rrhh
+            })
+    # Si no hay bloques autorizados, mantener los bloques detectados automáticamente pero NO sumarlos a minutos_extra
+    # (requieren validación manual por RRHH)
     
     return {
         "minutos_laborados": minutos_laborados,
-        "minutos_extra": 0,  # No se calculan aquí, van en reporte de horas extra
+        "minutos_extra": minutos_extra,
         "minutos_descanso": minutos_descanso,
         "total_eventos": len(eventos),
         "eventos": eventos_detalle,

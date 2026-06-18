@@ -6,14 +6,14 @@ Ejecutar con: python test_api.py
 import requests
 import json
 
-BASE_URL = "http://localhost:8001/api/v1"
+BASE_URL = "http://localhost:8090/api/v1"
 
 def test_login():
     """Prueba de login"""
     print("\n=== Prueba de Login ===")
     response = requests.post(f"{BASE_URL}/auth/login", json={
-        "username": "admin",
-        "password": "admin"
+        "username": "super",
+        "password": "super123"
     })
     print(f"Status: {response.status_code}")
     if response.status_code == 200:

@@ -882,14 +882,13 @@ def reporte_horas_extra(
                 })
             fecha_actual += timedelta(days=1)
     
-    # 2. Obtener bloques de horas extra ya autorizados (validación doble)
+    # 2. Obtener bloques de horas extra autorizados por RRHH
     query = select(BloqueHorasExtra, RegistroAsistencia).join(
         RegistroAsistencia, BloqueHorasExtra.asistencia_id == RegistroAsistencia.id
     ).where(
         RegistroAsistencia.fecha_turno >= inicio,
         RegistroAsistencia.fecha_turno <= fin,
-        BloqueHorasExtra.validacion_supervisor == True,
-        BloqueHorasExtra.validacion_rrhh == True
+        BloqueHorasExtra.validacion_rrhh == True  # Solo requiere validación de RRHH
     )
     
     if empleado_id:
@@ -910,7 +909,7 @@ def reporte_horas_extra(
             "horas_extra": round(bloque.minutos_extra / 60, 2),
             "validacion_supervisor": bloque.validacion_supervisor,
             "validacion_rrhh": bloque.validacion_rrhh,
-            "autorizado_completo": bloque.validacion_supervisor and bloque.validacion_rrhh
+            "autorizado_completo": bloque.validacion_rrhh  # Solo RRHH es suficiente
         })
     
     # 2. Obtener visitas pagadas autorizadas por RRHH
@@ -1343,7 +1342,7 @@ def exportar_horas_extra_excel(
                 for bloque in horas_info.get("bloques_visitas", []):
                     minutos_extra += bloque["minutos"]
                 
-                # 3. Bloques de horas extra ya autorizados (validación doble)
+                # 3. Bloques de horas extra autorizados por RRHH
                 asistencia = db.scalar(
                     select(RegistroAsistencia).where(
                         RegistroAsistencia.empleado_id == emp.id,
@@ -1354,8 +1353,7 @@ def exportar_horas_extra_excel(
                     bloques = db.scalars(
                         select(BloqueHorasExtra).where(
                             BloqueHorasExtra.asistencia_id == asistencia.id,
-                            BloqueHorasExtra.validacion_supervisor == True,
-                            BloqueHorasExtra.validacion_rrhh == True
+                            BloqueHorasExtra.validacion_rrhh == True  # Solo requiere validación de RRHH
                         )
                     ).all()
                     for bloque in bloques:
@@ -1562,12 +1560,12 @@ def aprobar_bloque_horas_extra_supervisor(bloque_id: int, db: Session = Depends(
 
 @router.put("/bloques-horas-extra/{bloque_id}/aprobar-rrhh", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR, RolNombre.RRHH))])
 def aprobar_bloque_horas_extra_rrhh(bloque_id: int, db: Session = Depends(get_db)):
-    """Aprueba un bloque de horas extra a nivel de RRHH"""
+    """Aprueba un bloque de horas extra a nivel de RRHH.
+    RRHH puede autorizar bloques aunque el supervisor no los haya validado.
+    Solo los bloques autorizados por RRHH se incluyen en reportes y Excel."""
     bloque = db.get(BloqueHorasExtra, bloque_id)
     if not bloque:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bloque de horas extra no encontrado")
-    if not bloque.validacion_supervisor:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El bloque debe ser validado por supervisor primero")
     
     bloque.validacion_rrhh = True
     db.commit()

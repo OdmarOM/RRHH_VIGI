@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     Empleado, TurnoHorario, RegistroAsistencia, EventoAsistencia, 
     Visita, BloqueHorasExtra, EstadoVisita, TipoEvento, EstadoRegistro,
-    CorreccionManual, TipoCorreccion, RegistroAusencia, TipoAusencia
+    CorreccionManual, TipoCorreccion, RegistroAusencia, TipoAusencia, TipoSalida
 )
 from app.services import (
     calcular_horas_laboradas, calcular_y_registrar_bloques_horas_extra, 
@@ -193,7 +193,8 @@ class TestHorasLaboradas:
             empleado_id=self.empleado.id,
             asistencia_id=asistencia.id,
             tipo_evento=TipoEvento.SALIDA_TEMPORAL,
-            fecha_evento=datetime.combine(fecha, time(12, 0)).replace(tzinfo=now.tzinfo)
+            fecha_evento=datetime.combine(fecha, time(12, 0)).replace(tzinfo=now.tzinfo),
+            tipo_salida="Permiso_Personal"
         ))
         self.session.add(EventoAsistencia(
             empleado_id=self.empleado.id,
@@ -211,9 +212,11 @@ class TestHorasLaboradas:
         
         resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
         
-        # 3h mañana + 4h tarde = 7h = 420 minutos
-        assert resultado["minutos_laborados"] == 420
+        # 3h mañana + 3h tarde = 6h laboradas + 1h extra detectada (no autorizada)
+        assert resultado["minutos_laborados"] == 360
+        assert resultado["minutos_extra"] == 0  # Bloque detectado no autorizado, no cuenta
         assert resultado["minutos_descanso"] == 60  # 1 hora de descanso
+        assert len(resultado["bloques_extra"]) == 1  # Bloque detectado pero no autorizado
         print("[OK] Test calcular_horas_laboradas_con_salida_temporal: PASSED")
     
     def test_salida_comer_no_descuenta_tiempo(self):
@@ -261,10 +264,149 @@ class TestHorasLaboradas:
         
         resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
         
-        # La hora de comida (12:00-13:00) SÍ cuenta como trabajada: 8h = 480 minutos
-        assert resultado["minutos_laborados"] == 480
+        # La hora de comida (12:00-13:00) SÍ cuenta como trabajada: 7h laboradas + 1h extra detectada (no autorizada)
+        assert resultado["minutos_laborados"] == 420  # 7 horas (9am-4pm, incluyendo hora de comida)
+        assert resultado["minutos_extra"] == 0  # Bloque detectado no autorizado, no cuenta
         assert resultado["minutos_descanso"] == 0  # Comer no se cuenta como descanso
+        assert len(resultado["bloques_extra"]) == 1  # Bloque detectado pero no autorizado
         print("[OK] Test salida_comer_no_descuenta_tiempo: PASSED")
+    
+    def test_permiso_temporal_con_regreso_no_descuenta_doble(self):
+        """Verifica que permiso temporal con regreso no descuenta doble"""
+        # Caso: 2pm entrada, 2:30pm permiso, 2:40pm regreso, 4pm salida
+        # Total: 120 minutos, permiso: 10 minutos, laborados: 110 minutos
+        fecha = FECHA_PRUEBA
+        
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(14, 0)),
+            hora_salida_real=datetime.combine(fecha, time(16, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(14, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(14, 30)).replace(tzinfo=now.tzinfo),
+            tipo_salida=TipoSalida.PERMISO_PERSONAL.value
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(14, 40)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(16, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        
+        # 30 min + 80 min = 110 minutos laborados (sin descuento doble)
+        assert resultado["minutos_laborados"] == 110
+        assert resultado["minutos_descanso"] == 10  # 10 minutos de permiso
+        assert resultado["minutos_extra"] == 0
+        print("[OK] Test permiso_temporal_con_regreso_no_descuenta_doble: PASSED")
+    
+    def test_permiso_termina_turno_sin_regreso(self):
+        """Verifica que permiso que termina turno sin regreso calcula correctamente"""
+        # Caso: 8am entrada, 2pm permiso, no regreso, horario 8am-4pm
+        # Laborados: 6 horas (8am-2pm), permiso: 2 horas (2pm-4pm)
+        fecha = FECHA_PRUEBA
+        
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(8, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(8, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(14, 0)).replace(tzinfo=now.tzinfo),
+            tipo_salida=TipoSalida.PERMISO_PERSONAL.value
+        ))
+        # No regreso - el turno termina a la hora oficial
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        
+        # 6 horas laboradas (8am-2pm), 2 horas permiso (2pm-4pm)
+        assert resultado["minutos_laborados"] == 360
+        assert resultado["minutos_descanso"] == 120  # 2 horas de permiso
+        assert resultado["minutos_extra"] == 0
+        print("[OK] Test permiso_termina_turno_sin_regreso: PASSED")
+    
+    def test_permiso_regreso_despues_hora_oficial_visita(self):
+        """Verifica que regreso después de hora oficial se trata como visita"""
+        # Caso: 8am entrada, 2pm permiso, 5pm regreso, horario 8am-4pm
+        # Laborados: 6 horas (8am-2pm), permiso: 2 horas (2pm-4pm), visita: 1 hora (4pm-5pm)
+        fecha = FECHA_PRUEBA
+        
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(8, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(8, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(14, 0)).replace(tzinfo=now.tzinfo),
+            tipo_salida=TipoSalida.PERMISO_PERSONAL.value
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        
+        # 6 horas laboradas (8am-2pm), 2 horas permiso (2pm-4pm), regreso es visita
+        assert resultado["minutos_laborados"] == 360
+        assert resultado["minutos_descanso"] == 120  # 2 horas de permiso
+        assert resultado["minutos_extra"] == 0
+        print("[OK] Test permiso_regreso_despues_hora_oficial_visita: PASSED")
 
 
 class TestHorasExtras:
@@ -758,7 +900,7 @@ class TestCorreccionesManuales:
         print("[OK] Test bloque_horas_extra_sin_autorizacion: PASSED")
     
     def test_bloque_horas_extra_autorizacion_parcial(self):
-        """Verifica que bloque con autorización parcial no se cuenta"""
+        """Verifica que bloque con autorización solo de supervisor no se cuenta (requiere RRHH)"""
         fecha = FECHA_PRUEBA
         
         # Crear asistencia base
@@ -787,7 +929,7 @@ class TestCorreccionesManuales:
         ))
         self.session.commit()
         
-        # Agregar bloque con autorización solo de supervisor
+        # Agregar bloque con autorización solo de supervisor (sin RRHH)
         bloque = BloqueHorasExtra(
             asistencia_id=asistencia.id,
             tipo_bloque="DESPUES_FIN",
@@ -806,7 +948,7 @@ class TestCorreccionesManuales:
         print("[OK] Test bloque_horas_extra_autorizacion_parcial: PASSED")
     
     def test_bloque_horas_extra_autorizacion_completa(self):
-        """Verifica que bloque con autorización completa se cuenta"""
+        """Verifica que bloque con autorización de RRHH se cuenta (supervisor opcional)"""
         fecha = FECHA_PRUEBA
         
         # Crear asistencia base
@@ -835,26 +977,149 @@ class TestCorreccionesManuales:
         ))
         self.session.commit()
         
-        # Agregar bloque con autorización completa
+        # Agregar bloque con autorización de RRHH (sin supervisor)
         bloque = BloqueHorasExtra(
             asistencia_id=asistencia.id,
             tipo_bloque="DESPUES_FIN",
             hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
             hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
             minutos_extra=60,
-            validacion_supervisor=True,
-            validacion_rrhh=True
+            validacion_supervisor=False,  # Supervisor no validó
+            validacion_rrhh=True  # RRHH autorizó
         )
         self.session.add(bloque)
         self.session.commit()
         
-        # Verificar que SÍ se cuenta
+        # Verificar que SÍ se cuenta (RRHH es suficiente)
         resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
         assert resultado["minutos_extra"] == 60
         assert len(resultado["bloques_extra"]) == 1
-        assert resultado["bloques_extra"][0]["validacion_supervisor"] == True
+        assert resultado["bloques_extra"][0]["validacion_supervisor"] == False
         assert resultado["bloques_extra"][0]["validacion_rrhh"] == True
         print("[OK] Test bloque_horas_extra_autorizacion_completa: PASSED")
+    
+    def test_rrhh_puede_autorizar_sin_supervisor(self):
+        """Verifica que RRHH puede autorizar horas extras aunque el supervisor no las haya validado"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar bloque sin validación de supervisor
+        bloque = BloqueHorasExtra(
+            asistencia_id=asistencia.id,
+            tipo_bloque="DESPUES_FIN",
+            hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
+            hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
+            minutos_extra=60,
+            validacion_supervisor=False,
+            validacion_rrhh=False
+        )
+        self.session.add(bloque)
+        self.session.commit()
+        
+        # Verificar que NO se cuenta inicialmente
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 0
+        
+        # RRHH autoriza el bloque (simulado)
+        bloque.validacion_rrhh = True
+        self.session.commit()
+        
+        # Verificar que ahora SÍ se cuenta
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 60
+        assert resultado["bloques_extra"][0]["validacion_rrhh"] == True
+        print("[OK] Test rrhh_puede_autorizar_sin_supervisor: PASSED")
+    
+    def test_supervisor_valida_rrhh_autoriza(self):
+        """Verifica el flujo completo: supervisor valida, RRHH autoriza"""
+        fecha = FECHA_PRUEBA
+        
+        # Crear asistencia base
+        asistencia = RegistroAsistencia(
+            empleado_id=self.empleado.id,
+            fecha_turno=fecha,
+            hora_entrada_real=datetime.combine(fecha, time(9, 0)),
+            hora_salida_real=datetime.combine(fecha, time(17, 0)),
+            estado_registro=EstadoRegistro.NORMAL
+        )
+        self.session.add(asistencia)
+        self.session.flush()
+        
+        now = utc_now()
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.ENTRADA,
+            fecha_evento=datetime.combine(fecha, time(9, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.add(EventoAsistencia(
+            empleado_id=self.empleado.id,
+            asistencia_id=asistencia.id,
+            tipo_evento=TipoEvento.SALIDA,
+            fecha_evento=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo)
+        ))
+        self.session.commit()
+        
+        # Agregar bloque sin validaciones
+        bloque = BloqueHorasExtra(
+            asistencia_id=asistencia.id,
+            tipo_bloque="DESPUES_FIN",
+            hora_inicio=datetime.combine(fecha, time(17, 0)).replace(tzinfo=now.tzinfo),
+            hora_fin=datetime.combine(fecha, time(18, 0)).replace(tzinfo=now.tzinfo),
+            minutos_extra=60,
+            validacion_supervisor=False,
+            validacion_rrhh=False
+        )
+        self.session.add(bloque)
+        self.session.commit()
+        
+        # Verificar que NO se cuenta inicialmente
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 0
+        
+        # Supervisor valida
+        bloque.validacion_supervisor = True
+        self.session.commit()
+        
+        # Verificar que aún NO se cuenta (falta RRHH)
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 0
+        
+        # RRHH autoriza
+        bloque.validacion_rrhh = True
+        self.session.commit()
+        
+        # Verificar que ahora SÍ se cuenta
+        resultado = calcular_horas_laboradas(self.session, self.empleado.id, fecha)
+        assert resultado["minutos_extra"] == 60
+        assert resultado["bloques_extra"][0]["validacion_supervisor"] == True
+        assert resultado["bloques_extra"][0]["validacion_rrhh"] == True
+        print("[OK] Test supervisor_valida_rrhh_autoriza: PASSED")
 
 
 def limpiar_ausencias_prueba(session, empleado_id, fecha=FECHA_PRUEBA):
