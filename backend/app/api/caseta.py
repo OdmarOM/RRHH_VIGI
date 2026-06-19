@@ -417,21 +417,106 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
     
     if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
         from app.services import calcular_y_registrar_bloques_horas_extra
+        from datetime import timedelta
+        
+        hora_entrada_oficial = datetime.combine(asistencia.fecha_turno if asistencia.fecha_turno else now.date(), turno["hora_entrada_oficial"])
+        hora_salida_oficial = datetime.combine(asistencia.fecha_turno if asistencia.fecha_turno else now.date(), turno["hora_salida_oficial"])
+        
+        # Asegurar timezone
+        if hora_entrada_oficial.tzinfo is None:
+            hora_entrada_oficial = hora_entrada_oficial.replace(tzinfo=now.tzinfo)
+        if hora_salida_oficial.tzinfo is None:
+            hora_salida_oficial = hora_salida_oficial.replace(tzinfo=now.tzinfo)
+        
+        # Obtener todos los eventos de la asistencia para detectar múltiples bloques
+        eventos = db.scalars(
+            select(EventoAsistencia).where(
+                EventoAsistencia.asistencia_id == asistencia.id
+            ).order_by(EventoAsistencia.fecha_evento)
+        ).all()
+        
+        # Agrupar eventos en pares de entrada/salida
+        bloques = []
+        i = 0
+        while i < len(eventos):
+            if eventos[i].tipo_evento == TipoEvento.ENTRADA:
+                entrada = eventos[i].fecha_evento
+                # Buscar la siguiente salida
+                j = i + 1
+                while j < len(eventos) and eventos[j].tipo_evento != TipoEvento.SALIDA:
+                    j += 1
+                if j < len(eventos):
+                    salida = eventos[j].fecha_evento
+                    bloques.append((entrada, salida))
+                    i = j + 1
+                else:
+                    i += 1
+            else:
+                i += 1
+        
+        # Para cada bloque, verificar si está fuera de horario y crear visita si es necesario
+        for idx, (entrada, salida) in enumerate(bloques):
+            entrada_fuera_horario = (
+                entrada < hora_entrada_oficial or
+                entrada > hora_salida_oficial
+            )
+            
+            salida_fuera_horario = (
+                salida < hora_entrada_oficial or
+                salida > hora_salida_oficial
+            )
+            
+            if entrada_fuera_horario and salida_fuera_horario:
+                # Bloque completamente fuera de horario = Visita
+                # Verificar si ya existe una visita para este bloque
+                visita_existente = db.scalar(
+                    select(Visita).where(
+                        Visita.empleado_id == empleado_id,
+                        Visita.asistencia_id == asistencia.id,
+                        Visita.hora_inicio == entrada
+                    )
+                )
+                
+                if not visita_existente:
+                    from app.services import crear_visita
+                    crear_visita(
+                        db=db,
+                        empleado_id=empleado_id,
+                        asistencia_id=asistencia.id,
+                        hora_fin=salida,
+                        minutos_duracion=int((salida - entrada).total_seconds() / 60),
+                        motivo="Visita fuera de horario",
+                        hora_inicio=entrada
+                    )
         
         # Calcular bloques de horas extra
         calcular_y_registrar_bloques_horas_extra(db, asistencia, asistencia.hora_entrada_real, now)
-        
-        # Si hay horas extra, crear visita para autorización
-        if asistencia.minutos_extra_calculados > 0:
-            # No crear visita automáticamente para evitar errores de timezone
-            db.add(ObservacionCaseta(
-                asistencia_id=asistencia.id,
-                tipo_observacion=f"Horas extra detectadas: {asistencia.minutos_extra_calculados} minutos. Registradas como bloques separados para autorización RRHH.",
-                fecha_registro=now
-            ))
     else:
         # Si no hay turno definido, marcar como visita
-        # No crear visita automáticamente para evitar errores de timezone
+        visita_pendiente = db.scalar(
+            select(Visita).where(
+                Visita.empleado_id == empleado_id,
+                Visita.estado == EstadoVisita.PENDIENTE,
+                Visita.hora_fin.is_(None)
+            ).order_by(Visita.fecha_visita.desc())
+        )
+        
+        if visita_pendiente:
+            visita_pendiente.hora_fin = now
+            visita_pendiente.minutos_duracion = int((now - visita_pendiente.hora_inicio).total_seconds() / 60)
+            visita_pendiente.motivo = visita_pendiente.motivo or "Visita sin turno definido"
+            db.add(visita_pendiente)
+        else:
+            from app.services import crear_visita
+            crear_visita(
+                db=db,
+                empleado_id=empleado_id,
+                asistencia_id=asistencia.id,
+                hora_fin=now,
+                minutos_duracion=int((now - asistencia.hora_entrada_real).total_seconds() / 60),
+                motivo="Visita sin turno definido"
+            )
+        
         db.add(ObservacionCaseta(
             asistencia_id=asistencia.id,
             tipo_observacion="Salida sin turno definido. Registrado como visita.",

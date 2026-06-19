@@ -6,23 +6,26 @@ from app.core.time import utc_now
 from app.models import BloqueHorasExtra, CorreccionManual, DetallePlantillaTurno, Empleado, EstadoEmpleado, EstadoRegistro, EstadoVisita, EventoAsistencia, ObservacionCaseta, PlantillaTurno, RegistroAsistencia, RegistroAusencia, SupervisorDepartamento, TipoEvento, TipoSalida, TurnoHorario, UsuarioSistema, Visita
 
 
-def crear_visita(db: Session, empleado_id: int, asistencia_id: int) -> Visita:
+def crear_visita(db: Session, empleado_id: int, asistencia_id: int, hora_fin: datetime = None, minutos_duracion: int = None, motivo: str = None, hora_inicio: datetime = None) -> Visita:
     """Crea una visita para una entrada fuera de horario."""
     now = utc_now()
     
-    # Usar now como hora_inicio para evitar problemas de timezone
-    hora_inicio = now
+    # Usar hora_inicio proporcionado o now como default
+    if hora_inicio is None:
+        hora_inicio = now
     
-    minutos_duracion = None
+    # Usar hora_inicio como fecha_visita para mantener consistencia
+    fecha_visita = hora_inicio
     
     visita = Visita(
         empleado_id=empleado_id,
         asistencia_id=asistencia_id,
-        fecha_visita=now,
+        fecha_visita=fecha_visita,
         hora_inicio=hora_inicio,
-        hora_fin=None,
+        hora_fin=hora_fin,
         minutos_duracion=minutos_duracion,
-        estado=EstadoVisita.PENDIENTE
+        estado=EstadoVisita.PENDIENTE,
+        motivo=motivo
     )
     db.add(visita)
     db.commit()
@@ -534,8 +537,9 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
         })
         
         # Verificar si el evento está asociado a una visita no pagada
+        # Solo excluir eventos fuera de horario oficial que estén asociados a visita NO_PAGADA
         visita_no_pagada = False
-        if evento.asistencia:
+        if evento.asistencia and hora_entrada_oficial and hora_salida_oficial:
             visita = db.scalar(
                 select(Visita).where(
                     Visita.asistencia_id == evento.asistencia.id,
@@ -543,9 +547,19 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
                 )
             )
             if visita:
-                visita_no_pagada = True
+                # Asegurar que ambos tengan timezone para comparar
+                evento_fecha = evento.fecha_evento
+                if evento_fecha.tzinfo is None:
+                    evento_fecha = evento_fecha.replace(tzinfo=now.tzinfo)
+                # Verificar si el evento está fuera del horario oficial
+                evento_fuera_horario = (
+                    evento_fecha < hora_entrada_oficial or
+                    evento_fecha > hora_salida_oficial
+                )
+                if evento_fuera_horario:
+                    visita_no_pagada = True
         
-        # Si es visita no pagada, no contar las horas
+        # Si es visita no pagada y está fuera de horario, no contar las horas
         if visita_no_pagada:
             continue
         
@@ -649,12 +663,11 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             hora_salida_temporal = evento.fecha_evento
             tipo_salida_temporal_actual = evento.tipo_salida
             # Sumar minutos laborados hasta la salida temporal
-            # Asegurar que ambos tengan timezone
             if hora_salida_temporal.tzinfo is None:
                 hora_salida_temporal = hora_salida_temporal.replace(tzinfo=now.tzinfo)
             if hora_entrada_actual.tzinfo is None:
                 hora_entrada_actual = hora_entrada_actual.replace(tzinfo=now.tzinfo)
-            minutos = int((hora_salida_temporal - hora_entrada_actual).total_seconds() / 60)
+            minutos = round((hora_salida_temporal - hora_entrada_actual).total_seconds() / 60)
             minutos_laborados += minutos
             hora_entrada_actual = None
         elif evento.tipo_evento == TipoEvento.REGRESO_SALIDA_TEMPORAL:
@@ -678,11 +691,12 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
                     turno_cumplido = True
                     turno_terminado_por_permiso = True
                 else:
-                    minutos_ausente = int((hora_regreso - hora_salida_temporal).total_seconds() / 60)
+                    minutos_ausente = round((hora_regreso - hora_salida_temporal).total_seconds() / 60)
                     # Las salidas a Comer NO descuentan tiempo laborado: el tiempo se cuenta como trabajado
                     if tipo_salida_temporal_actual == TipoSalida.COMER.value:
                         minutos_laborados += minutos_ausente
                     else:
+                        # Permiso personal: NO descuenta del tiempo laborado, solo se registra en minutos_descanso
                         minutos_descanso = minutos_ausente
                     # Reanudar conteo desde el regreso
                     hora_entrada_actual = evento.fecha_evento
@@ -753,6 +767,18 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
             })
     # Si no hay bloques autorizados, mantener los bloques detectados automáticamente pero NO sumarlos a minutos_extra
     # (requieren validación manual por RRHH)
+    
+    # Obtener visitas pagadas por RRHH y sumarlas a minutos laborados
+    visitas_pagadas = db.scalars(
+        select(Visita).where(
+            Visita.empleado_id == empleado_id,
+            Visita.estado == EstadoVisita.PAGADA
+        )
+    ).all()
+    
+    for visita in visitas_pagadas:
+        if visita.minutos_duracion:
+            minutos_laborados += visita.minutos_duracion
     
     return {
         "minutos_laborados": minutos_laborados,
@@ -1001,40 +1027,36 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
     limite_entrada_previa = hora_entrada_oficial - timedelta(minutes=tolerancia_entrada_previa)
     limite_entrada_posterior = hora_entrada_oficial + timedelta(minutes=tolerancia_entrada_posterior)
     
-    # Caso especial: Si entra después del fin del turno -> Registrar como visita
+    # Caso especial: Si entra después del fin del turno -> Registrar como entrada (se decidirá en salida)
     if now > hora_salida_oficial:
         asistencia.hora_entrada_real = now
-        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        asistencia.estado_registro = EstadoRegistro.NORMAL
         empleado.estado_actual = EstadoEmpleado.LABORANDO
-        # Registrar evento de entrada como visita
+        # Registrar evento de entrada (se decidirá si es visita o extra en la salida)
         db.add(EventoAsistencia(
             empleado_id=empleado.id,
             asistencia_id=asistencia.id,
             tipo_evento=TipoEvento.ENTRADA,
             fecha_evento=now,
-            observaciones="Visita después del fin del turno"
+            observaciones="Entrada después del fin del turno (se decidirá en salida)"
         ))
-        # Crear registro en tabla visitas para que aparezca en panel RRHH
-        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
     
-    # Caso 1: Llegó antes del inicio de turno (dentro de tolerancia previa) -> Registrar como visita
+    # Caso 1: Llegó antes del inicio de turno (dentro de tolerancia previa) -> Registrar como entrada (se decidirá en salida)
     if now < hora_entrada_oficial and now >= limite_entrada_previa:
         asistencia.hora_entrada_real = now
-        asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
+        asistencia.estado_registro = EstadoRegistro.NORMAL
         empleado.estado_actual = EstadoEmpleado.LABORANDO
-        # Registrar evento de entrada como visita
+        # Registrar evento de entrada (se decidirá si es visita o extra en la salida)
         db.add(EventoAsistencia(
             empleado_id=empleado.id,
             asistencia_id=asistencia.id,
             tipo_evento=TipoEvento.ENTRADA,
             fecha_evento=now,
-            observaciones="Visita antes de turno (dentro de tolerancia)"
+            observaciones="Entrada antes de turno (dentro de tolerancia, se decidirá en salida)"
         ))
-        # Crear registro en tabla visitas para que aparezca en panel RRHH
-        crear_visita(db, empleado.id, asistencia.id)
         db.commit()
         db.refresh(asistencia)
         return asistencia
