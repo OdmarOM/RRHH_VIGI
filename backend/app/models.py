@@ -166,6 +166,7 @@ class RegistroAsistencia(Base):
     autorizacion_horas_extra_rrhh: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     omision_salida_detectada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     hora_cierre_automatico: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    salida_anticipada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     empleado: Mapped[Empleado] = relationship()
 

@@ -4,11 +4,9 @@ from sqlalchemy.orm import Session
 engine = create_engine('sqlite:///rrhh_dev.db')
 session = Session(engine)
 
-# Tablas a eliminar (manteniendo solo empleados, turnos_horarios, plantillas_turnos, detalles_plantilla_turno, usuarios_sistema)
+# Tablas a eliminar (manteniendo: usuarios_sistema, roles, departamentos, turnos_horarios, plantillas_turnos, detalles_plantilla_turno)
 tablas_a_eliminar = [
     'solicitudes_pase_trabajo',
-    'departamentos',
-    'roles',
     'evidencias_fotograficas',
     'registro_ausencias',
     'supervisores_departamentos',
@@ -19,7 +17,8 @@ tablas_a_eliminar = [
     'observaciones_caseta',
     'eventos_asistencia',
     'visitas',
-    'salidas_temporales'
+    'salidas_temporales',
+    'empleados'  # Eliminar empleados para empezar desde cero
 ]
 
 print('Limpiando base de datos...')
@@ -32,4 +31,4 @@ for tabla in tablas_a_eliminar:
 
 session.commit()
 print('\nBase de datos limpiada exitosamente.')
-print('Tablas mantenidas: empleados, turnos_horarios, plantillas_turnos, detalles_plantilla_turno, usuarios_sistema')
+print('Tablas mantenidas: usuarios_sistema, roles, departamentos, turnos_horarios, plantillas_turnos, detalles_plantilla_turno')

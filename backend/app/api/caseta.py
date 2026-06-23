@@ -52,12 +52,20 @@ def test_horario(gafete: str, db: Session = Depends(get_db)):
     if not empleado:
         return {"error": "Colaborador no encontrado"}
     now = utc_now()
-    turno = get_empleado_turno(db, empleado, now.weekday())
+    # Obtener asistencia del día actual para usar su fecha
+    asistencia = db.scalar(
+        select(RegistroAsistencia).where(
+            RegistroAsistencia.empleado_id == empleado.id,
+            RegistroAsistencia.fecha_turno == now.date()
+        )
+    )
+    fecha_turno = asistencia.fecha_turno if asistencia else now.date()
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
     return {
         "empleado_id": empleado.id,
         "numero_empleado": empleado.numero_empleado,
         "plantilla_turno_id": empleado.plantilla_turno_id,
-        "dia_semana": now.weekday(),
+        "dia_semana": fecha_turno.weekday(),
         "turno": turno
     }
 
@@ -191,13 +199,17 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
         if hora_salida_con_tz.tzinfo is None:
             hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
         
-        # Si el regreso es después de la hora de salida oficial, calcular hasta la hora oficial
+        # REGLA ANTIFRAUDE: Si el regreso es después de la hora de salida oficial, 
+        # cortar el permiso personal exactamente en la hora oficial
         if hora_salida_oficial and now > hora_salida_oficial:
             salida.minutos_descontados = int((hora_salida_oficial - hora_salida_con_tz).total_seconds() / 60)
+            salida.hora_regreso = hora_salida_oficial  # Cortar el permiso en la hora oficial
         else:
             salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
+            salida.hora_regreso = now
     else:
         salida.minutos_descontados = 0
+        salida.hora_regreso = now
 
     # Manejar retorno antes o después del fin de turno
     if hora_salida_oficial and now > hora_salida_oficial:
@@ -321,13 +333,17 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         if hora_salida_con_tz.tzinfo is None:
             hora_salida_con_tz = hora_salida_con_tz.replace(tzinfo=now.tzinfo)
         
-        # Si el regreso es después de la hora de salida oficial, calcular hasta la hora oficial
+        # REGLA ANTIFRAUDE: Si el regreso es después de la hora de salida oficial, 
+        # cortar el permiso personal exactamente en la hora oficial
         if hora_salida_oficial and now > hora_salida_oficial:
             salida.minutos_descontados = int((hora_salida_oficial - hora_salida_con_tz).total_seconds() / 60)
+            salida.hora_regreso = hora_salida_oficial  # Cortar el permiso en la hora oficial
         else:
             salida.minutos_descontados = int((now - hora_salida_con_tz).total_seconds() / 60)
+            salida.hora_regreso = now
     else:
         salida.minutos_descontados = 0
+        salida.hora_regreso = now
 
     # Manejar retorno antes o después del fin de turno
     if hora_salida_oficial and now > hora_salida_oficial:
@@ -347,8 +363,15 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
         empleado.estado_actual = EstadoEmpleado.LABORANDO
 
         # Crear registro en tabla visitas para que aparezca en panel RRHH
+        # REGLA ANTIFRAUDE: El tiempo después del regreso es VISITA, no hora extra
         from app.services import crear_visita
-        crear_visita(db, empleado.id, nueva_visita.id)
+        crear_visita(
+            db=db,
+            empleado_id=empleado.id,
+            asistencia_id=nueva_visita.id,
+            hora_inicio=now,
+            motivo="Visita por reingreso post-turno (regreso después de hora oficial)"
+        )
 
         # Registrar evento de regreso después de fin de turno
         db.add(EventoAsistencia(
@@ -356,7 +379,7 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
             asistencia_id=nueva_visita.id,
             tipo_evento=TipoEvento.REGRESO_SALIDA_TEMPORAL,
             fecha_evento=now,
-            observaciones="Regreso después de fin de turno"
+            observaciones="Regreso después de fin de turno - Clasificado como visita (antifraude)"
         ))
 
         db.add(ObservacionCaseta(
@@ -395,11 +418,12 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
 
     now = utc_now()
 
-    # Buscar la asistencia más reciente del colaborador para el día actual
+    # Buscar la asistencia activa del colaborador para el día actual (sin salida registrada)
     asistencia = db.scalar(
         select(RegistroAsistencia)
         .where(RegistroAsistencia.empleado_id == empleado_id)
         .where(RegistroAsistencia.fecha_turno == now.date())
+        .where(RegistroAsistencia.hora_salida_real.is_(None))
         .order_by(RegistroAsistencia.hora_entrada_real.desc())
     )
 
@@ -413,7 +437,7 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
         asistencia.fecha_turno = now.date()
     
     # Calcular bloques de horas extra si hay turno definido
-    turno = get_empleado_turno(db, empleado, now.weekday())
+    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
     
     if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
         from app.services import calcular_y_registrar_bloques_horas_extra
@@ -427,6 +451,40 @@ def salida_final(empleado_id: int, db: Session = Depends(get_db)):
             hora_entrada_oficial = hora_entrada_oficial.replace(tzinfo=now.tzinfo)
         if hora_salida_oficial.tzinfo is None:
             hora_salida_oficial = hora_salida_oficial.replace(tzinfo=now.tzinfo)
+        
+        # Verificar si la asistencia completa está fuera del horario oficial
+        if asistencia.hora_entrada_real and asistencia.hora_salida_real:
+            hora_entrada = asistencia.hora_entrada_real
+            hora_salida = asistencia.hora_salida_real
+            if hora_entrada.tzinfo is None:
+                hora_entrada = hora_entrada.replace(tzinfo=now.tzinfo)
+            if hora_salida.tzinfo is None:
+                hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+            
+            # Si toda la asistencia está después del fin del turno o antes del inicio, es una visita
+            if hora_entrada >= hora_salida_oficial or hora_salida <= hora_entrada_oficial:
+                # Verificar si ya existe una visita para esta asistencia
+                visita_existente = db.scalar(
+                    select(Visita).where(
+                        Visita.empleado_id == empleado_id,
+                        Visita.asistencia_id == asistencia.id
+                    )
+                )
+                
+                if not visita_existente:
+                    from app.services import crear_visita
+                    crear_visita(
+                        db=db,
+                        empleado_id=empleado_id,
+                        asistencia_id=asistencia.id,
+                        hora_fin=hora_salida,
+                        minutos_duracion=int((hora_salida - hora_entrada).total_seconds() / 60),
+                        motivo="Visita fuera de horario",
+                        hora_inicio=hora_entrada
+                    )
+                    
+                    # Marcar la asistencia como visita
+                    asistencia.estado_registro = EstadoRegistro.VISITA_DESCANSO
         
         # Obtener todos los eventos de la asistencia para detectar múltiples bloques
         eventos = db.scalars(

@@ -173,10 +173,15 @@ export function Admin() {
 
   async function cargarHorasExtraPendientes() {
     try {
-      const { data } = await api.get('/caseta/historial')
-      const pendientes = data.filter(a => a.minutos_extra_calculados > 0 && !a.autorizacion_horas_extra_rrhh)
-      setHorasExtraPendientes(pendientes)
-    } catch {}
+      const params = {}
+      if (filtroVisitasFechaInicio) params.fecha_inicio = filtroVisitasFechaInicio
+      if (filtroVisitasFechaFin) params.fecha_fin = filtroVisitasFechaFin
+      if (filtroVisitasEmpleado) params.empleado_id = filtroVisitasEmpleado
+      const { data } = await api.get('/admin/bloques-horas-extra', { params })
+      setHorasExtraPendientes(data)
+    } catch (error) {
+      console.error('Error al cargar bloques de horas extra:', error)
+    }
   }
 
   async function actualizarVisita(visitaId, nuevoEstado, motivo = null) {
@@ -519,7 +524,7 @@ export function Admin() {
   async function aprobarBloqueHorasExtraSupervisor(bloque_id) {
     try {
       await api.put(`/admin/bloques-horas-extra/${bloque_id}/aprobar-supervisor`)
-      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validacion_supervisor: true } : r))
+      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validado_supervisor: true } : r))
       setMessage('✅ Bloque de horas extra aprobado por supervisor')
     } catch (err) {
       setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
@@ -529,10 +534,21 @@ export function Admin() {
   async function aprobarBloqueHorasExtraRRHH(bloque_id) {
     try {
       await api.put(`/admin/bloques-horas-extra/${bloque_id}/aprobar-rrhh`)
-      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validacion_rrhh: true, autorizado_completo: true } : r))
+      setReporteHorasExtra(reporteHorasExtra.map(r => r.bloque_id === bloque_id ? { ...r, validado_rrhh: true, autorizado_completo: true } : r))
       setMessage('✅ Bloque de horas extra aprobado por RRHH')
+      cargarHorasExtraPendientes()
     } catch (err) {
       setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo aprobar'))
+    }
+  }
+
+  async function rechazarBloqueHorasExtraRRHH(bloque_id) {
+    try {
+      await api.put(`/admin/bloques-horas-extra/${bloque_id}/rechazar-rrhh`)
+      setHorasExtraPendientes(horasExtraPendientes.filter(h => h.id !== bloque_id))
+      setMessage('❌ Bloque de horas extra rechazado por RRHH')
+    } catch (err) {
+      setMessage('❌ Error: ' + (err.response?.data?.detail || 'No se pudo rechazar'))
     }
   }
 
@@ -1702,48 +1718,79 @@ export function Admin() {
       {tab === 'visitas' && <section style={{ display: 'grid', gap: '1.5rem' }}>
         <div className="panel" style={{ padding: '1rem' }}>
           <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Autorización de Horas Extra</h3>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <input
+              type="date"
+              value={filtroVisitasFechaInicio}
+              onChange={e => setFiltroVisitasFechaInicio(e.target.value)}
+              placeholder="Fecha inicio"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <input
+              type="date"
+              value={filtroVisitasFechaFin}
+              onChange={e => setFiltroVisitasFechaFin(e.target.value)}
+              placeholder="Fecha fin"
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem' }}
+            />
+            <select
+              value={filtroVisitasEmpleado}
+              onChange={e => setFiltroVisitasEmpleado(e.target.value)}
+              style={{ padding: '0.5rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.375rem', minWidth: '200px' }}
+            >
+              <option value="">Todos los colaboradores</option>
+              {empleados.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.numero_empleado} - {emp.nombre_completo}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => { cargarVisitas(); cargarHorasExtraPendientes(); }}
+              style={{ padding: '0.5rem 1rem', background: '#3b82f6', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Filtrar
+            </button>
+            <button
+              onClick={() => { setFiltroVisitasFechaInicio(''); setFiltroVisitasFechaFin(''); setFiltroVisitasEmpleado(''); cargarVisitas(); cargarHorasExtraPendientes(); }}
+              style={{ padding: '0.5rem 1rem', background: '#64748b', color: '#f8fafc', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+            >
+              Limpiar
+            </button>
+          </div>
           {horasExtraPendientes.length === 0 ? <p style={{ color: '#94a3b8' }}>No hay horas extra pendientes de autorización</p> : (
             <table className="table">
               <thead>
                 <tr style={{ background: 'rgba(30,41,59,0.5)' }}>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Colaborador</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Fecha</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Entrada</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Hora Salida</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra (min)</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Tipo</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horario</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Horas Extra</th>
+                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Validado Supervisor</th>
                   <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: 900 }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
                 {horasExtraPendientes.map(h => {
-                  const emp = empleados.find(e => e.id === h.empleado_id)
                   return (
                     <tr key={h.id} style={{ borderBottom: '1px solid #1e293b' }}>
-                      <td style={{ padding: '0.75rem' }}>{emp ? `${emp.numero_empleado} - ${emp.nombre_completo}` : 'N/A'}</td>
-                      <td style={{ padding: '0.75rem' }}>{h.fecha_turno}</td>
-                      <td style={{ padding: '0.75rem' }}>{h.hora_entrada_real ? new Date(h.hora_entrada_real).toLocaleString() : '-'}</td>
-                      <td style={{ padding: '0.75rem' }}>{h.hora_salida_real ? new Date(h.hora_salida_real).toLocaleString() : '-'}</td>
-                      <td style={{ padding: '0.75rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span>{h.minutos_extra_calculados} min</span>
-                          <input 
-                            type="number" 
-                            defaultValue={h.minutos_extra_calculados}
-                            style={{ width: '60px', padding: '0.25rem', background: '#1e293b', border: '1px solid #334155', borderRadius: '0.25rem', color: '#fff' }}
-                            onBlur={(e) => modificarHorasExtra(h.id, parseInt(e.target.value))}
-                          />
-                        </div>
+                      <td style={{ padding: '0.75rem' }}>{h.nombre_empleado} #{h.numero_empleado}</td>
+                      <td style={{ padding: '0.75rem' }}>{h.fecha}</td>
+                      <td style={{ padding: '0.75rem' }}>{h.tipo_bloque === 'ANTES_INICIO' ? 'Antes del turno' : 'Después del turno'}</td>
+                      <td style={{ padding: '0.75rem', fontSize: '0.75rem' }}>
+                        {new Date(h.hora_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(h.hora_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </td>
+                      <td style={{ padding: '0.75rem' }}>{h.minutos_extra} min ({h.horas_extra}h)</td>
+                      <td style={{ padding: '0.75rem' }}>{h.validado_supervisor ? '✅' : '❌'}</td>
                       <td style={{ padding: '0.75rem' }}>
                         <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
-                          {!h.autorizacion_horas_extra_rrhh && (
-                            <button onClick={() => autorizarHorasExtra(h.id)} className="btn-sm btn-sm-green">✅ Autorizar RRHH</button>
+                          {h.validado_supervisor && !h.validado_rrhh && (
+                            <>
+                              <button onClick={() => aprobarBloqueHorasExtraRRHH(h.id)} className="btn-sm btn-sm-green">✅ Autorizar RRHH</button>
+                              <button onClick={() => rechazarBloqueHorasExtraRRHH(h.id)} className="btn-sm btn-sm-red">❌ Rechazar</button>
+                            </>
                           )}
-                          {h.autorizacion_horas_extra_rrhh && (
-                            <button onClick={() => revocarAutorizacionRRHH(h.id)} className="btn-sm btn-sm-red">❌ Revocar RRHH</button>
-                          )}
-                          {h.validacion_supervisor && (
-                            <button onClick={() => revocarValidacionSupervisor(h.id)} className="btn-sm btn-sm-yellow">🔄 Revocar Supervisor</button>
+                          {h.validado_rrhh && (
+                            <span style={{ fontSize: '0.75rem', color: '#22c55e' }}>✅ Autorizado</span>
                           )}
                         </div>
                       </td>
@@ -2271,10 +2318,10 @@ export function Admin() {
                       </td>
                       <td style={{ padding: '0.75rem' }}>{r.minutos_extra} min</td>
                       <td style={{ padding: '0.75rem', fontWeight: 700 }}>{r.horas_extra}h</td>
-                      <td style={{ padding: '0.75rem' }}>{r.validacion_supervisor ? '✅' : '❌'}</td>
-                      <td style={{ padding: '0.75rem' }}>{r.validacion_rrhh ? '✅' : '❌'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.validado_supervisor ? '✅' : '❌'}</td>
+                      <td style={{ padding: '0.75rem' }}>{r.validado_rrhh ? '✅' : '❌'}</td>
                       <td style={{ padding: '0.75rem' }}>
-                        {r.autorizado_completo ? (
+                        {r.validado_rrhh ? (
                           <span style={{ color: '#22c55e', fontWeight: 700 }}>✅ Autorizado</span>
                         ) : (
                           <span style={{ color: '#eab308' }}>⏳ Pendiente</span>
@@ -2293,13 +2340,13 @@ export function Admin() {
                       </td>
                       <td style={{ padding: '0.75rem' }}>
                         <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
-                          {!r.validacion_supervisor && (
+                          {!r.validado_supervisor && (
                             <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Esperando supervisor</span>
                           )}
-                          {r.validacion_supervisor && !r.validacion_rrhh && (
+                          {r.validado_supervisor && !r.validado_rrhh && (
                             <button onClick={() => aprobarBloqueHorasExtraRRHH(r.bloque_id)} className="btn-sm btn-sm-green">✓ Validar RRHH</button>
                           )}
-                          {r.validacion_supervisor && r.validacion_rrhh && (
+                          {r.validado_supervisor && r.validado_rrhh && (
                             <span style={{ fontSize: '0.75rem', color: '#22c55e' }}>Completado</span>
                           )}
                         </div>
