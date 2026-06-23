@@ -799,11 +799,12 @@ def reporte_horas_laboradas(
     
     from app.services import calcular_horas_laboradas, get_empleado_turno
     from datetime import datetime
-    from app.models import EstadoVisita
+    from app.models import EstadoVisita, TipoCorreccion
     reporte = []
     for reg in registros:
         if reg.hora_entrada_real and reg.hora_salida_real:
             # Si es una visita, verificar si está autorizada por RRHH
+            visita = None
             if reg.estado_registro == EstadoRegistro.VISITA_DESCANSO:
                 visita = db.scalar(
                     select(Visita).where(
@@ -812,49 +813,121 @@ def reporte_horas_laboradas(
                         Visita.fecha_autorizacion.is_not(None)
                     )
                 )
-                # Si no está autorizada, no incluir en el reporte
-                if not visita:
-                    continue
             
-            # Calcular horas laboradas usando la función correcta
-            # Esta función calcula solo el tiempo dentro del horario oficial
-            horas_info = calcular_horas_laboradas(db, reg.empleado_id, reg.fecha_turno)
-            horas = round(horas_info.get("minutos_laborados", 0) / 60, 2)
+            # Obtener horario oficial del empleado
+            empleado = db.get(Empleado, reg.empleado_id)
+            turno = get_empleado_turno(db, empleado, reg.fecha_turno.weekday())
             
-            # Verificar si hay bloques de horas extra para determinar la hora de corte
-            bloques_extra = db.scalars(
-                select(BloqueHorasExtra).where(
-                    BloqueHorasExtra.asistencia_id == reg.id,
-                    BloqueHorasExtra.tipo_bloque == 'DESPUES_FIN'
-                )
-            ).all()
+            # Calcular tiempo dentro del horario oficial
+            minutos_laborados = 0
+            hora_entrada_oficial = None
+            hora_salida_oficial = None
+            inicio_laborado = None
+            fin_laborado = None
             
-            # Si hay un bloque DESPUES_FIN, usar su hora_inicio como hora de salida
-            hora_salida_reporte = reg.hora_salida_real
-            if bloques_extra:
-                hora_salida_reporte = bloques_extra[0].hora_inicio
+            if turno and turno["hora_entrada_oficial"] and turno["hora_salida_oficial"]:
+                now = utc_now()
+                hora_entrada_oficial = datetime.combine(reg.fecha_turno, turno["hora_entrada_oficial"], tzinfo=now.tzinfo)
+                hora_salida_oficial = datetime.combine(reg.fecha_turno, turno["hora_salida_oficial"], tzinfo=now.tzinfo)
+                
+                hora_entrada = reg.hora_entrada_real
+                hora_salida = reg.hora_salida_real
+                if hora_entrada.tzinfo is None:
+                    hora_entrada = hora_entrada.replace(tzinfo=now.tzinfo)
+                if hora_salida.tzinfo is None:
+                    hora_salida = hora_salida.replace(tzinfo=now.tzinfo)
+                
+                # Calcular tiempo dentro del horario oficial
+                inicio_laborado = max(hora_entrada, hora_entrada_oficial)
+                fin_laborado = min(hora_salida, hora_salida_oficial)
+                
+                if fin_laborado > inicio_laborado:
+                    minutos_laborados = int((fin_laborado - inicio_laborado).total_seconds() / 60)
             
-            # Verificar si hay ausencia aprobada en esa fecha
-            ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
-            estado_ausencia = None
-            if ausencia:
-                estado_ausencia = {
-                    "tipo": ausencia["tipo_ausencia"],
-                    "pagada": ausencia["pagada"],
-                    "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
-                }
+            # Si es visita autorizada, mostrarla como registro
+            if visita and visita.minutos_duracion:
+                minutos_registro = visita.minutos_duracion
+                horas_registro = round(minutos_registro / 60, 2)
+                
+                # Verificar si hay ausencia aprobada en esa fecha
+                ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
+                estado_ausencia = None
+                if ausencia:
+                    estado_ausencia = {
+                        "tipo": ausencia["tipo_ausencia"],
+                        "pagada": ausencia["pagada"],
+                        "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
+                    }
+                
+                reporte.append({
+                    "empleado_id": reg.empleado_id,
+                    "fecha": reg.fecha_turno.isoformat(),
+                    "hora_entrada": reg.hora_entrada_real.isoformat(),
+                    "hora_salida": reg.hora_salida_real.isoformat(),
+                    "horas_laboradas": horas_registro,
+                    "estado": "VISITA_AUTORIZADA",
+                    "estado_ausencia": estado_ausencia,
+                    "correcciones_manuales": [],
+                    "minutos_descanso": 0
+                })
             
-            reporte.append({
-                "empleado_id": reg.empleado_id,
-                "fecha": reg.fecha_turno.isoformat(),
-                "hora_entrada": reg.hora_entrada_real.isoformat(),
-                "hora_salida": hora_salida_reporte.isoformat(),
-                "horas_laboradas": round(horas, 2),
-                "estado": reg.estado_registro,
-                "estado_ausencia": estado_ausencia,
-                "correcciones_manuales": [],
-                "minutos_descanso": 0
-            })
+            # Si hay tiempo dentro del horario oficial, mostrarlo como registro separado
+            if minutos_laborados > 0:
+                horas_laboradas = round(minutos_laborados / 60, 2)
+                
+                # Verificar si hay ausencia aprobada en esa fecha
+                ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
+                estado_ausencia = None
+                if ausencia:
+                    estado_ausencia = {
+                        "tipo": ausencia["tipo_ausencia"],
+                        "pagada": ausencia["pagada"],
+                        "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
+                    }
+                
+                reporte.append({
+                    "empleado_id": reg.empleado_id,
+                    "nombre_empleado": empleado.nombre_completo,
+                    "numero_empleado": empleado.numero_empleado,
+                    "fecha": reg.fecha_turno.isoformat(),
+                    "hora_entrada": inicio_laborado.isoformat(),
+                    "hora_salida": fin_laborado.isoformat(),
+                    "horas_laboradas": horas_laboradas,
+                    "estado": "HORAS_LABORADAS",
+                    "estado_ausencia": estado_ausencia,
+                    "correcciones_manuales": [],
+                    "minutos_descanso": 0
+                })
+    
+    # Agregar correcciones manuales de tipo HORAS_LABORADAS como registros individuales
+    correcciones_query = select(CorreccionManual, Empleado).join(
+        Empleado, CorreccionManual.empleado_id == Empleado.id
+    ).where(
+        CorreccionManual.fecha >= inicio,
+        CorreccionManual.fecha <= fin,
+        CorreccionManual.tipo_correccion == TipoCorreccion.HORAS_LABORADAS
+    )
+    
+    if empleado_id:
+        correcciones_query = correcciones_query.where(CorreccionManual.empleado_id == empleado_id)
+    
+    resultados_correcciones = db.execute(correcciones_query.order_by(CorreccionManual.fecha)).all()
+    
+    for correccion, emp in resultados_correcciones:
+        horas_correccion = round(correccion.minutos_agregados / 60, 2)
+        reporte.append({
+            "empleado_id": emp.id,
+            "nombre_empleado": emp.nombre_completo,
+            "numero_empleado": emp.numero_empleado,
+            "fecha": correccion.fecha.isoformat(),
+            "hora_entrada": None,
+            "hora_salida": None,
+            "horas_laboradas": horas_correccion,
+            "estado": "CORRECCION_MANUAL",
+            "estado_ausencia": None,
+            "correcciones_manuales": [{"minutos": correccion.minutos_agregados, "motivo": correccion.motivo}],
+            "minutos_descanso": 0
+        })
     
     return reporte
 
@@ -937,6 +1010,20 @@ def reporte_horas_laboradas_excel(
                     hora_salida = hora_salida.replace(tzinfo=utc_now().tzinfo)
                 minutos_totales += int((hora_salida - hora_entrada).total_seconds() / 60)
             
+            # Obtener correcciones manuales de tipo HORAS_LABORADAS para este empleado y fecha
+            from app.models import TipoCorreccion
+            correcciones = db.scalars(
+                select(CorreccionManual).where(
+                    CorreccionManual.empleado_id == empleado.id,
+                    CorreccionManual.fecha == fecha_actual,
+                    CorreccionManual.tipo_correccion == TipoCorreccion.HORAS_LABORADAS
+                )
+            ).all()
+            
+            # Sumar minutos de correcciones manuales
+            minutos_correcciones = sum(c.minutos_agregados for c in correcciones)
+            minutos_totales += minutos_correcciones
+            
             horas = minutos_totales / 60
             
             # Solo incluir si hay horas laboradas o si hay asistencia registrada
@@ -980,7 +1067,7 @@ def reporte_horas_laboradas_excel(
                     "hora_salida": hora_salida,
                     "horas_laboradas": round(horas, 2),
                     "estado_ausencia": estado_ausencia,
-                    "correcciones_manuales": [],
+                    "correcciones_manuales": [{"minutos": c.minutos_agregados, "motivo": c.motivo} for c in correcciones],
                     "minutos_descanso": 0
                 })
             
@@ -1610,7 +1697,7 @@ def exportar_asistencias_excel(
         nombre_hoja = dept.nombre[:31].replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
         ws = wb.create_sheet(title=nombre_hoja)
 
-        headers = ['Número', 'Colaborador'] + [f"{d.strftime('%d/%m')} ({dias_semana[d.weekday()]})" for d in dias_en_rango] + ['TOTAL', 'Correcciones']
+        headers = ['Número', 'Colaborador'] + [f"{d.strftime('%d/%m')} ({dias_semana[d.weekday()]})" for d in dias_en_rango] + ['TOTAL']
         ws.append(headers)
 
         for cell in ws[1]:
@@ -1621,7 +1708,6 @@ def exportar_asistencias_excel(
         for emp in dept_empleados:
             fila = [emp.numero_empleado, emp.nombre_completo]
             total_asistencias = 0
-            correcciones_texto = []
 
             for fecha in dias_en_rango:
                 reg = next((r for r in registros if r.empleado_id == emp.id and r.fecha_turno == fecha), None)
@@ -1644,20 +1730,8 @@ def exportar_asistencias_excel(
                         turno_dia = get_empleado_turno(db, emp, fecha.weekday())
                         es_dia_descanso = turno_dia is not None and turno_dia.get("es_descanso", False)
                         fila.append('D' if es_dia_descanso else 'NO')  # D=Descanso, NO=Falta
-                
-                # Obtener correcciones manuales para esta fecha (Horas_Laboradas y Permiso)
-                from app.services import calcular_horas_laboradas
-                horas_info = calcular_horas_laboradas(db, emp.id, fecha)
-                correcciones = [c for c in horas_info.get("correcciones", []) if c["tipo"] in ["Horas_Laboradas", "Permiso"]]
-                minutos_descanso = horas_info.get("minutos_descanso", 0)
-                for c in correcciones:
-                    if c['tipo'] == 'Permiso':
-                        correcciones_texto.append(f"{fecha.strftime('%d/%m')}: {c['tipo']} {c['minutos']:.1f}min")
-                    else:
-                        correcciones_texto.append(f"{fecha.strftime('%d/%m')}: {c['tipo']} {c['minutos']:+.1f}min")
 
             fila.append(total_asistencias)
-            fila.append('; '.join(correcciones_texto) if correcciones_texto else '')
             ws.append(fila)
 
         for column in ws.columns:
@@ -1707,6 +1781,23 @@ def aprobar_bloque_horas_extra_rrhh(bloque_id: int, db: Session = Depends(get_db
     bloque.validacion_rrhh = True
     db.commit()
     return {"message": "Bloque de horas extra aprobado por RRHH"}
+
+
+@router.put("/bloques-horas-extra/{bloque_id}/actualizar-minutos", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR, RolNombre.RRHH, RolNombre.SUPERVISOR))])
+def actualizar_minutos_bloque_horas_extra(bloque_id: int, minutos_extra: int, db: Session = Depends(get_db)):
+    """Actualiza los minutos extra de un bloque de horas extra.
+    Tanto supervisor como RRHH pueden modificar la cantidad de tiempo extra autorizado."""
+    bloque = db.get(BloqueHorasExtra, bloque_id)
+    if not bloque:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bloque de horas extra no encontrado")
+    
+    if minutos_extra < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Los minutos extra no pueden ser negativos")
+    
+    bloque.minutos_extra = minutos_extra
+    db.commit()
+    db.refresh(bloque)
+    return {"message": "Minutos extra actualizados", "minutos_extra": bloque.minutos_extra}
 
 
 @router.put("/incidencias/horas-extra/{asistencia_id}/aprobar-rrhh", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR, RolNombre.RRHH))])

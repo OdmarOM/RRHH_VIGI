@@ -552,6 +552,17 @@ export function Admin() {
     }
   }
 
+  async function actualizarMinutosBloqueHorasExtra(bloque_id, minutos) {
+    try {
+      await api.put(`/admin/bloques-horas-extra/${bloque_id}/actualizar-minutos`, null, { params: { minutos } })
+      setMessage('✅ Minutos extra actualizados')
+      cargarHorasExtraPendientes()
+    } catch {
+      setMessage('❌ Error al actualizar minutos extra')
+    }
+    setTimeout(() => setMessage(''), 3000)
+  }
+
   async function generarReporteAsistencias(event) {
     event.preventDefault()
     try {
@@ -1779,7 +1790,15 @@ export function Admin() {
                       <td style={{ padding: '0.75rem', fontSize: '0.75rem' }}>
                         {new Date(h.hora_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(h.hora_fin).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </td>
-                      <td style={{ padding: '0.75rem' }}>{h.minutos_extra} min ({h.horas_extra}h)</td>
+                      <td style={{ padding: '0.75rem' }}>
+                        <input
+                          type="number"
+                          value={h.minutos_extra}
+                          onChange={e => actualizarMinutosBloqueHorasExtra(h.id, parseInt(e.target.value))}
+                          style={{ width: '60px', padding: '0.25rem', background: '#1e293b', border: '1px solid #334155', color: '#f8fafc', borderRadius: '0.25rem' }}
+                        />
+                        min
+                      </td>
                       <td style={{ padding: '0.75rem' }}>{h.validado_supervisor ? '✅' : '❌'}</td>
                       <td style={{ padding: '0.75rem' }}>
                         <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
