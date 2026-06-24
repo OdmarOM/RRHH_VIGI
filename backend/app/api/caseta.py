@@ -60,7 +60,7 @@ def test_horario(gafete: str, db: Session = Depends(get_db)):
         )
     )
     fecha_turno = asistencia.fecha_turno if asistencia else now.date()
-    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday(), fecha_turno)
     return {
         "empleado_id": empleado.id,
         "numero_empleado": empleado.numero_empleado,
@@ -181,7 +181,7 @@ def regreso_salida_temporal(id: int, db: Session = Depends(get_db)):
     # Obtener horario oficial del empleado
     # Usar la fecha de la asistencia o la fecha actual si fecha_turno es None
     fecha_turno = asistencia.fecha_turno if asistencia.fecha_turno else now.date()
-    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday(), fecha_turno)
     hora_salida_oficial = None
     if turno and turno["hora_salida_oficial"]:
         hora_salida_oficial = datetime.combine(
@@ -315,7 +315,7 @@ def regreso_salida_temporal_por_empleado(payload: RegresoSalidaTemporalRequest, 
     # Obtener horario oficial del empleado
     # Usar la fecha de la asistencia o la fecha actual si fecha_turno es None
     fecha_turno = asistencia.fecha_turno if asistencia.fecha_turno else now.date()
-    turno = get_empleado_turno(db, empleado, fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, fecha_turno.weekday(), fecha_turno)
     hora_salida_oficial = None
     if turno and turno["hora_salida_oficial"]:
         hora_salida_oficial = datetime.combine(

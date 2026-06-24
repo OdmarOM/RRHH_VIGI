@@ -56,6 +56,9 @@ class PlantillaTurnoOut(BaseModel):
     id: int
     nombre: str
     descripcion: str | None = None
+    es_rotativa: bool = False
+    plantilla_semana_par_id: int | None = None
+    plantilla_semana_impar_id: int | None = None
 
 
 class DetallePlantillaOut(BaseModel):

@@ -129,6 +129,15 @@ class PlantillaTurno(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     nombre: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
     descripcion: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    
+    # Campos para rotación de turnos
+    es_rotativa: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    plantilla_semana_par_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
+    plantilla_semana_impar_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
+    
+    # Relaciones para rotación
+    plantilla_semana_par: Mapped["PlantillaTurno"] = relationship(foreign_keys=[plantilla_semana_par_id], remote_side=[id])
+    plantilla_semana_impar: Mapped["PlantillaTurno"] = relationship(foreign_keys=[plantilla_semana_impar_id], remote_side=[id])
 
 
 class DetallePlantillaTurno(Base):

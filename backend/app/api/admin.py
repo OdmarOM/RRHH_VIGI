@@ -144,8 +144,21 @@ def eliminar_turno(id: int, db: Session = Depends(get_db)):
 
 # Plantillas de turnos
 @router.post("/plantillas-turnos", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
-def crear_plantilla(nombre: str, descripcion: str | None = None, db: Session = Depends(get_db)):
-    plantilla = PlantillaTurno(nombre=nombre, descripcion=descripcion)
+def crear_plantilla(
+    nombre: str, 
+    descripcion: str | None = None, 
+    es_rotativa: bool = False,
+    plantilla_semana_par_id: int | None = None,
+    plantilla_semana_impar_id: int | None = None,
+    db: Session = Depends(get_db)
+):
+    plantilla = PlantillaTurno(
+        nombre=nombre, 
+        descripcion=descripcion,
+        es_rotativa=es_rotativa,
+        plantilla_semana_par_id=plantilla_semana_par_id,
+        plantilla_semana_impar_id=plantilla_semana_impar_id
+    )
     db.add(plantilla)
     db.commit()
     db.refresh(plantilla)
@@ -172,13 +185,27 @@ def eliminar_plantilla(id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/plantillas-turnos/{id}", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
-def actualizar_plantilla(id: int, nombre: str, descripcion: str | None = None, db: Session = Depends(get_db)):
+def actualizar_plantilla(
+    id: int, 
+    nombre: str, 
+    descripcion: str | None = None,
+    es_rotativa: bool | None = None,
+    plantilla_semana_par_id: int | None = None,
+    plantilla_semana_impar_id: int | None = None,
+    db: Session = Depends(get_db)
+):
     plantilla = db.get(PlantillaTurno, id)
     if not plantilla:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plantilla no encontrada")
     plantilla.nombre = nombre
     if descripcion is not None:
         plantilla.descripcion = descripcion
+    if es_rotativa is not None:
+        plantilla.es_rotativa = es_rotativa
+    if plantilla_semana_par_id is not None:
+        plantilla.plantilla_semana_par_id = plantilla_semana_par_id
+    if plantilla_semana_impar_id is not None:
+        plantilla.plantilla_semana_impar_id = plantilla_semana_impar_id
     db.commit()
     db.refresh(plantilla)
     return plantilla
@@ -211,6 +238,56 @@ def agregar_detalle_plantilla(plantilla_id: int, data: dict, db: Session = Depen
     db.commit()
     db.refresh(detalle)
     return detalle
+
+
+@router.get("/empleados/{empleado_id}/plantilla-efectiva", dependencies=[ADMIN_ACCESS])
+def obtener_plantilla_efectiva(
+    empleado_id: int,
+    fecha: str | None = None,
+    db: Session = Depends(get_db)
+):
+    """Obtiene la plantilla efectiva para un empleado en una fecha específica, considerando rotación."""
+    from datetime import datetime
+    from app.services import get_empleado_turno
+    
+    empleado = db.get(Empleado, empleado_id)
+    if not empleado:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
+    
+    if not empleado.plantilla_turno_id:
+        return {"plantilla_efectiva": None, "es_rotativa": False}
+    
+    plantilla = db.get(PlantillaTurno, empleado.plantilla_turno_id)
+    if not plantilla:
+        return {"plantilla_efectiva": None, "es_rotativa": False}
+    
+    # Si la plantilla es rotativa, determinar cuál usar según fecha
+    plantilla_efectiva = plantilla
+    if plantilla.es_rotativa:
+        if fecha:
+            fecha_obj = datetime.fromisoformat(fecha).date()
+        else:
+            from app.utils import utc_now
+            fecha_obj = utc_now().date()
+        
+        semana_numero = fecha_obj.isocalendar()[1]
+        if semana_numero % 2 == 0:
+            plantilla_efectiva = plantilla.plantilla_semana_par
+        else:
+            plantilla_efectiva = plantilla.plantilla_semana_impar
+    
+    return {
+        "plantilla_efectiva": {
+            "id": plantilla_efectiva.id,
+            "nombre": plantilla_efectiva.nombre,
+            "descripcion": plantilla_efectiva.descripcion
+        } if plantilla_efectiva else None,
+        "es_rotativa": plantilla.es_rotativa,
+        "plantilla_base": {
+            "id": plantilla.id,
+            "nombre": plantilla.nombre
+        }
+    }
 
 
 @router.get("/plantillas-turnos/{plantilla_id}/detalles", dependencies=[ADMIN_ACCESS])
@@ -816,7 +893,7 @@ def reporte_horas_laboradas(
             
             # Obtener horario oficial del empleado
             empleado = db.get(Empleado, reg.empleado_id)
-            turno = get_empleado_turno(db, empleado, reg.fecha_turno.weekday())
+            turno = get_empleado_turno(db, empleado, reg.fecha_turno.weekday(), reg.fecha_turno)
             
             # Calcular tiempo dentro del horario oficial
             minutos_laborados = 0
@@ -873,31 +950,50 @@ def reporte_horas_laboradas(
             
             # Si hay tiempo dentro del horario oficial, mostrarlo como registro separado
             if minutos_laborados > 0:
-                horas_laboradas = round(minutos_laborados / 60, 2)
+                # Descontar tiempo de salidas temporales que se solapen con el período laborado
+                from app.models import TipoSalida
+                salidas_temporales = db.scalars(
+                    select(SalidaTemporal).where(
+                        SalidaTemporal.asistencia_id == reg.id,
+                        SalidaTemporal.tipo_salida == TipoSalida.PERMISO_PERSONAL,
+                        SalidaTemporal.descuenta_tiempo == True
+                    )
+                ).all()
                 
-                # Verificar si hay ausencia aprobada en esa fecha
-                ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
-                estado_ausencia = None
-                if ausencia:
-                    estado_ausencia = {
-                        "tipo": ausencia["tipo_ausencia"],
-                        "pagada": ausencia["pagada"],
-                        "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
-                    }
+                minutos_descanso = 0
+                for st in salidas_temporales:
+                    if st.minutos_descontados:
+                        minutos_descanso += st.minutos_descontados
                 
-                reporte.append({
-                    "empleado_id": reg.empleado_id,
-                    "nombre_empleado": empleado.nombre_completo,
-                    "numero_empleado": empleado.numero_empleado,
-                    "fecha": reg.fecha_turno.isoformat(),
-                    "hora_entrada": inicio_laborado.isoformat(),
-                    "hora_salida": fin_laborado.isoformat(),
-                    "horas_laboradas": horas_laboradas,
-                    "estado": "HORAS_LABORADAS",
-                    "estado_ausencia": estado_ausencia,
-                    "correcciones_manuales": [],
-                    "minutos_descanso": 0
-                })
+                minutos_laborados -= minutos_descanso
+                
+                # Si después de descontar el permiso aún hay tiempo laborado, mostrarlo
+                if minutos_laborados > 0:
+                    horas_laboradas = round(minutos_laborados / 60, 2)
+                    
+                    # Verificar si hay ausencia aprobada en esa fecha
+                    ausencia = verificar_ausencia_aprobada(db, reg.empleado_id, reg.fecha_turno)
+                    estado_ausencia = None
+                    if ausencia:
+                        estado_ausencia = {
+                            "tipo": ausencia["tipo_ausencia"],
+                            "pagada": ausencia["pagada"],
+                            "porcentaje_aportacion": ausencia["porcentaje_aportacion"]
+                        }
+                    
+                    reporte.append({
+                        "empleado_id": reg.empleado_id,
+                        "nombre_empleado": empleado.nombre_completo,
+                        "numero_empleado": empleado.numero_empleado,
+                        "fecha": reg.fecha_turno.isoformat(),
+                        "hora_entrada": inicio_laborado.isoformat(),
+                        "hora_salida": fin_laborado.isoformat(),
+                        "horas_laboradas": horas_laboradas,
+                        "estado": "HORAS_LABORADAS",
+                        "estado_ausencia": estado_ausencia,
+                        "correcciones_manuales": [],
+                        "minutos_descanso": minutos_descanso
+                    })
     
     # Agregar correcciones manuales de tipo HORAS_LABORADAS como registros individuales
     correcciones_query = select(CorreccionManual, Empleado).join(
@@ -1314,7 +1410,7 @@ def reporte_asistencias(
                     # No hay ausencia ni asistencia
                     # Verificar si es día de descanso del empleado
                     from app.services import get_empleado_turno
-                    turno_dia = get_empleado_turno(db, empleado, fecha_actual.weekday())
+                    turno_dia = get_empleado_turno(db, empleado, fecha_actual.weekday(), fecha_actual)
                     es_dia_descanso = turno_dia is not None and turno_dia.get("es_descanso", False)
 
                     reporte.append({
@@ -1727,7 +1823,7 @@ def exportar_asistencias_excel(
                     else:
                         # Verificar si es día de descanso del empleado
                         from app.services import get_empleado_turno
-                        turno_dia = get_empleado_turno(db, emp, fecha.weekday())
+                        turno_dia = get_empleado_turno(db, emp, fecha.weekday(), fecha)
                         es_dia_descanso = turno_dia is not None and turno_dia.get("es_descanso", False)
                         fila.append('D' if es_dia_descanso else 'NO')  # D=Descanso, NO=Falta
 

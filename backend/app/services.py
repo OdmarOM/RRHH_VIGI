@@ -45,7 +45,7 @@ def calcular_y_registrar_bloques_horas_extra(db: Session, asistencia: RegistroAs
         return
     
     # Obtener horario oficial del empleado
-    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday(), asistencia.fecha_turno)
     if not turno or not turno["hora_entrada_oficial"] or not turno["hora_salida_oficial"]:
         return
     
@@ -186,7 +186,7 @@ def calcular_horas_laboradas(db: Session, empleado_id: int, fecha: date) -> dict
     """
     now = utc_now()
     empleado = db.get(Empleado, empleado_id)
-    turno = get_empleado_turno(db, empleado, fecha.weekday())
+    turno = get_empleado_turno(db, empleado, fecha.weekday(), fecha)
     
     # Verificar si hay ausencia aprobada (vacaciones/incapacidad/permiso)
     ausencia = verificar_ausencia_aprobada(db, empleado_id, fecha)
@@ -375,9 +375,10 @@ def get_or_create_today_asistencia(db: Session, empleado: Empleado) -> RegistroA
     return asistencia
 
 
-def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
+def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int, fecha: date | None = None):
     """Obtiene el horario del empleado para un día específico.
-    Primero busca en turnos individuales, si no tiene, busca en plantilla si está asignada."""
+    Primero busca en turnos individuales, si no tiene, busca en plantilla si está asignada.
+    Si la plantilla es rotativa, alterna según semana par/impar."""
     # Primero buscar turnos individuales
     turno_individual = db.scalar(
         select(TurnoHorario).where(
@@ -400,6 +401,20 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int):
     if empleado.plantilla_turno_id:
         plantilla = db.get(PlantillaTurno, empleado.plantilla_turno_id)
         if plantilla:
+            # Si la plantilla es rotativa, determinar cuál usar según semana par/impar
+            if plantilla.es_rotativa:
+                if fecha is None:
+                    fecha = utc_now().date()
+                semana_numero = fecha.isocalendar()[1]  # Número de semana del año
+                if semana_numero % 2 == 0:
+                    plantilla = plantilla.plantilla_semana_par
+                else:
+                    plantilla = plantilla.plantilla_semana_impar
+            
+            # Si después de la rotación no hay plantilla válida, retornar None
+            if not plantilla:
+                return None
+            
             detalle = db.scalar(
                 select(DetallePlantillaTurno).where(
                     DetallePlantillaTurno.plantilla_id == plantilla.id,
@@ -427,7 +442,7 @@ def get_employee_info(db: Session, gafete: str) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador no encontrado o inactivo")
 
     asistencia = get_or_create_today_asistencia(db, empleado)
-    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday(), asistencia.fecha_turno)
 
     # Verificar ausencias programadas
     ausencias = db.scalars(
@@ -512,7 +527,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
         
         if asistencia_actual and asistencia_actual.hora_entrada_real and not asistencia_actual.hora_salida_real:
             # Obtener turno del empleado
-            turno = get_empleado_turno(db, empleado, asistencia_actual.fecha_turno.weekday())
+            turno = get_empleado_turno(db, empleado, asistencia_actual.fecha_turno.weekday(), asistencia_actual.fecha_turno)
             
             if turno and turno["hora_salida_oficial"]:
                 hora_salida_oficial = datetime.combine(
@@ -607,7 +622,7 @@ def scan_employee(db: Session, gafete: str) -> RegistroAsistencia:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Colaborador está en espera de pase digital; requiere aprobación de supervisor")
 
     asistencia = get_or_create_today_asistencia(db, empleado)
-    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday())
+    turno = get_empleado_turno(db, empleado, asistencia.fecha_turno.weekday(), asistencia.fecha_turno)
 
     if not turno or turno["es_descanso"] or not turno["hora_entrada_oficial"]:
         asistencia.hora_entrada_real = now

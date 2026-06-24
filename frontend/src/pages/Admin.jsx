@@ -13,8 +13,9 @@ export function Admin() {
   const [tab, setTab] = useState('empleados')
   const [form, setForm] = useState({ numero_empleado: '', nombre_completo: '', departamento_id: '', puesto: '' })
   const [turnoForm, setTurnoForm] = useState({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, tolerancia_entrada_previa: 15, tolerancia_salida_posterior: 15, tolerancia_salida_previa: 5, es_descanso: false, es_por_asistencia: false })
-  const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '' })
+  const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '', es_rotativa: false, plantilla_semana_par_id: null, plantilla_semana_impar_id: null })
   const [plantillaSeleccionada, setPlantillaSeleccionada] = useState('')
+  const [plantillaEfectiva, setPlantillaEfectiva] = useState(null)
   const [detallesTemporales, setDetallesTemporales] = useState({})
   const [editandoEmpleado, setEditandoEmpleado] = useState(null)
   const [editandoPlantilla, setEditandoPlantilla] = useState(null)
@@ -707,7 +708,7 @@ export function Admin() {
     try {
       await api.post('/admin/plantillas-turnos', null, { params: plantillaForm })
       setMessage('✅ Plantilla creada')
-      setPlantillaForm({ nombre: '', descripcion: '' })
+      setPlantillaForm({ nombre: '', descripcion: '', es_rotativa: false, plantilla_semana_par_id: null, plantilla_semana_impar_id: null })
       cargar()
     } catch {
       setMessage('❌ Error al crear plantilla')
@@ -715,9 +716,9 @@ export function Admin() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  async function actualizarPlantilla(id, nombre, descripcion) {
+  async function actualizarPlantilla(id, nombre, descripcion, es_rotativa, plantilla_semana_par_id, plantilla_semana_impar_id) {
     try {
-      await api.put(`/admin/plantillas-turnos/${id}`, null, { params: { nombre, descripcion } })
+      await api.put(`/admin/plantillas-turnos/${id}`, null, { params: { nombre, descripcion, es_rotativa, plantilla_semana_par_id, plantilla_semana_impar_id } })
       setMessage('✅ Plantilla actualizada')
       cargar()
     } catch {
@@ -800,6 +801,18 @@ export function Admin() {
     } catch (error) {
       setMessage('❌ Error al cargar detalles')
       setTimeout(() => setMessage(''), 3000)
+    }
+  }
+
+  async function cargarPlantillaEfectiva(empleadoId) {
+    try {
+      const { data } = await api.get(`/admin/empleados/${empleadoId}/plantilla-efectiva`)
+      setPlantillaEfectiva(data)
+      if (data.plantilla_efectiva) {
+        cargarDetallesPlantilla(data.plantilla_efectiva.id)
+      }
+    } catch (error) {
+      console.error('Error al cargar plantilla efectiva:', error)
     }
   }
 
@@ -1042,8 +1055,9 @@ export function Admin() {
             const empleado = empleados.find(e => e.id === Number(turnoForm.empleado_id))
             const plantillaAsignada = empleado?.plantilla_turno_id ? plantillas.find(p => p.id === empleado.plantilla_turno_id) : null
             
-            if (plantillaAsignada && (detallesPlantilla.length === 0 || detallesPlantilla[0]?.plantilla_id !== plantillaAsignada.id)) {
-              cargarDetallesPlantilla(plantillaAsignada.id)
+            // Cargar plantilla efectiva si el empleado tiene plantilla asignada
+            if (empleado?.plantilla_turno_id && !plantillaEfectiva) {
+              cargarPlantillaEfectiva(empleado.id)
             }
             
             return (
@@ -1052,6 +1066,8 @@ export function Admin() {
                   onClick={() => {
                     setTurnoForm({ ...turnoForm, empleado_id: '' })
                     setTurnosTemporales({})
+                    setPlantillaEfectiva(null)
+                    setDetallesPlantilla([])
                   }}
                   className="btn-sm btn-sm-gray" style={{ marginBottom: '1rem' }}
                 >
@@ -1063,7 +1079,24 @@ export function Admin() {
                 </div>
                 <div style={{ marginBottom: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
                   <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Plantilla de Turno</h4>
-                  {plantillaAsignada ? (
+                  {plantillaEfectiva?.plantilla_efectiva ? (
+                    <div>
+                      {plantillaEfectiva.es_rotativa && (
+                        <div style={{ marginBottom: '0.5rem', padding: '0.5rem', background: 'rgba(168, 85, 247, 0.1)', borderRadius: '0.25rem', fontSize: '0.75rem', color: '#a855f7' }}>
+                          🔄 Plantilla rotativa - Esta semana: {plantillaEfectiva.plantilla_efectiva.nombre}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaEfectiva.plantilla_efectiva.nombre}</span>
+                        <button 
+                          onClick={() => romperPlantillaEmpleado(Number(turnoForm.empleado_id))}
+                          className="btn-sm btn-sm-yellow"
+                        >
+                          Romper referencia (crear horario personal)
+                        </button>
+                      </div>
+                    </div>
+                  ) : plantillaAsignada ? (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
                       <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
                       <button 
@@ -1318,21 +1351,59 @@ export function Admin() {
         {subTabTurnos === 'plantillas' && <div className="panel" style={{ padding: '1rem' }}>
           <div style={{ marginBottom: '1rem' }}>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 900, margin: '0 0 1rem 0' }}>Crear Nueva Plantilla</h3>
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <input
-                className="input"
-                placeholder="Nombre de la plantilla"
-                value={plantillaForm.nombre}
-                onChange={(e) => setPlantillaForm({ ...plantillaForm, nombre: e.target.value })}
-                style={{ flex: 1 }}
-              />
-              <input
-                className="input"
-                placeholder="Descripción (opcional)"
-                value={plantillaForm.descripcion}
-                onChange={(e) => setPlantillaForm({ ...plantillaForm, descripcion: e.target.value })}
-                style={{ flex: 1 }}
-              />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <input
+                  className="input"
+                  placeholder="Nombre de la plantilla"
+                  value={plantillaForm.nombre}
+                  onChange={(e) => setPlantillaForm({ ...plantillaForm, nombre: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+                <input
+                  className="input"
+                  placeholder="Descripción (opcional)"
+                  value={plantillaForm.descripcion}
+                  onChange={(e) => setPlantillaForm({ ...plantillaForm, descripcion: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#e2e8f0' }}>
+                  <input
+                    type="checkbox"
+                    checked={plantillaForm.es_rotativa || false}
+                    onChange={(e) => setPlantillaForm({ ...plantillaForm, es_rotativa: e.target.checked })}
+                  />
+                  Plantilla rotativa (semana par/impar)
+                </label>
+              </div>
+              {plantillaForm.es_rotativa && (
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <select
+                    className="input"
+                    value={plantillaForm.plantilla_semana_par_id || ''}
+                    onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_par_id: e.target.value ? parseInt(e.target.value) : null })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">Plantilla semana par</option>
+                    {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
+                      <option key={p.id} value={p.id}>{p.nombre}</option>
+                    ))}
+                  </select>
+                  <select
+                    className="input"
+                    value={plantillaForm.plantilla_semana_impar_id || ''}
+                    onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_impar_id: e.target.value ? parseInt(e.target.value) : null })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">Plantilla semana impar</option>
+                    {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
+                      <option key={p.id} value={p.id}>{p.nombre}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <button className="btn" onClick={crearPlantilla}>➕ Crear</button>
             </div>
           </div>
