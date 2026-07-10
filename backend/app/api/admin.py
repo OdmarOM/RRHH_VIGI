@@ -1,17 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.api.deps import require_roles, get_current_user
 from app.core.database import get_db
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 import os
 import tempfile
 from app.core.time import utc_now
 from app.models import BloqueHorasExtra, CorreccionManual, Departamento, DetallePlantillaTurno, Empleado, PlantillaTurno, RegistroAsistencia, RegistroAusencia, RolNombre, SalidaTemporal, TurnoHorario, UsuarioSistema, Rol, SupervisorDepartamento, Visita, EstadoVisita, EstadoRegistro, TipoCorreccion
-from app.schemas import AusenciaCreate, AusenciaOut, CorreccionManualCreate, CorreccionManualOut, EmpleadoCreate, EmpleadoOut, EmpleadoUpdate, TurnoCreate, TurnoOut, TurnoUpdate
+from app.schemas import AusenciaCreate, AusenciaOut, CorreccionManualCreate, CorreccionManualOut, EmpleadoCreate, EmpleadoOut, EmpleadoUpdate, TurnoCreate, TurnoOut, TurnoUpdate, ImportarEmpleadosResponse
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -25,6 +25,121 @@ def crear_empleado(payload: EmpleadoCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(empleado)
     return empleado
+
+
+@router.post("/empleados/importar-excel", response_model=ImportarEmpleadosResponse, dependencies=[ADMIN_ACCESS])
+def importar_empleados_excel(
+    archivo: UploadFile,
+    db: Session = Depends(get_db)
+):
+    """Importa colaboradores desde un archivo Excel.
+    
+    Formato del Excel:
+    - Columna A: numero_empleado (obligatorio)
+    - Columna B: nombre_completo (obligatorio)
+    - Columna C: departamento_id (obligatorio)
+    - Columna D: puesto (obligatorio)
+    """
+    if not archivo.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo debe ser un Excel (.xlsx o .xls)")
+    
+    try:
+        # Leer el archivo Excel
+        contenido = archivo.file.read()
+        print(f"Archivo leído: {len(contenido)} bytes")
+        
+        # Usar BytesIO para leer el contenido
+        from io import BytesIO
+        wb = load_workbook(filename=BytesIO(contenido), read_only=True)
+        hoja = wb.active
+        print(f"Hoja activa: {hoja.title}")
+        
+        exitosos = 0
+        errores = []
+        total_procesados = 0
+        
+        # Obtener departamentos existentes para validar
+        departamentos = db.scalars(select(Departamento)).all()
+        deptos_por_id = {d.id: d.nombre for d in departamentos}
+        deptos_por_nombre = {d.nombre.lower(): d.id for d in departamentos}
+        
+        # Empezar desde la fila 2 (asumiendo fila 1 como encabezados)
+        for fila_idx, fila in enumerate(hoja.iter_rows(min_row=2, values_only=True), start=2):
+            total_procesados += 1
+            
+            # Obtener valores de las columnas
+            numero_empleado = str(fila[0]).strip() if fila[0] else None
+            nombre_completo = str(fila[1]).strip() if fila[1] else None
+            departamento = str(fila[2]).strip() if fila[2] else None
+            puesto = str(fila[3]).strip() if fila[3] else None
+            
+            # Validaciones
+            if not numero_empleado or not nombre_completo or not departamento or not puesto:
+                errores.append({
+                    "fila": fila_idx,
+                    "mensaje": "Faltan datos obligatorios (numero_empleado, nombre_completo, departamento, puesto)"
+                })
+                continue
+            
+            # Verificar si el número de empleado ya existe
+            existente = db.scalar(
+                select(Empleado).where(Empleado.numero_empleado == numero_empleado)
+            )
+            if existente:
+                errores.append({
+                    "fila": fila_idx,
+                    "mensaje": f"El número de empleado {numero_empleado} ya existe"
+                })
+                continue
+            
+            # Obtener departamento_id
+            departamento_id = None
+            try:
+                departamento_id = int(departamento)
+                if departamento_id not in deptos_por_id:
+                    errores.append({
+                        "fila": fila_idx,
+                        "mensaje": f"Departamento ID {departamento_id} no existe"
+                    })
+                    continue
+            except ValueError:
+                # Intentar buscar por nombre
+                depto_id = deptos_por_nombre.get(departamento.lower())
+                if not depto_id:
+                    errores.append({
+                        "fila": fila_idx,
+                        "mensaje": f"Departamento '{departamento}' no encontrado"
+                    })
+                    continue
+                departamento_id = depto_id
+            
+            # Crear empleado
+            try:
+                empleado = Empleado(
+                    numero_empleado=numero_empleado,
+                    nombre_completo=nombre_completo,
+                    departamento_id=departamento_id,
+                    puesto=puesto,
+                    activo=True
+                )
+                db.add(empleado)
+                db.commit()
+                exitosos += 1
+            except Exception as e:
+                db.rollback()
+                errores.append({
+                    "fila": fila_idx,
+                    "mensaje": f"Error al crear empleado: {str(e)}"
+                })
+        
+        return ImportarEmpleadosResponse(
+            exitosos=exitosos,
+            errores=errores,
+            total_procesados=total_procesados
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al procesar el archivo: {str(e)}")
 
 
 @router.get("/empleados", response_model=list[EmpleadoOut], dependencies=[ADMIN_ACCESS])

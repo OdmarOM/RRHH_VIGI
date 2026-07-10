@@ -32,12 +32,21 @@ with SessionLocal() as db:
         db.add(UsuarioSistema(username="admin", password_hash=hash_password("admin123"), rol_id=admin_rol.id, activo=True))
     db.flush()
 
-    if not db.scalar(select(Departamento).where(Departamento.nombre == "Producción")):
-        db.add(Departamento(nombre="Producción"))
-    if not db.scalar(select(Departamento).where(Departamento.nombre == "Almacén")):
-        db.add(Departamento(nombre="Almacén"))
-    if not db.scalar(select(Departamento).where(Departamento.nombre == "Mantenimiento")):
-        db.add(Departamento(nombre="Mantenimiento"))
+    departamentos = [
+        "ALMACÉN",
+        "EMBARQUES",
+        "VENTAS",
+        "OPERACIÓN",
+        "ADMINISTRATIVA",
+        "RUTAS",
+        "SEGURIDAD Y VIGILANCIA",
+        "SÚPER",
+        "LIMPIEZA"
+    ]
+    
+    for nombre in departamentos:
+        if not db.scalar(select(Departamento).where(Departamento.nombre == nombre)):
+            db.add(Departamento(nombre=nombre))
     db.flush()
 
     if not db.scalar(select(PlantillaTurno).where(PlantillaTurno.nombre == "Matutino")):

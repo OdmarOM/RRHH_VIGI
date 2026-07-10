@@ -51,6 +51,12 @@ class EmpleadoOut(BaseModel):
     plantilla_turno_id: int | None = None
 
 
+class ImportarEmpleadosResponse(BaseModel):
+    exitosos: int
+    errores: list[dict]
+    total_procesados: int
+
+
 class PlantillaTurnoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

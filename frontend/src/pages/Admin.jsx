@@ -20,6 +20,8 @@ export function Admin() {
   const [editandoEmpleado, setEditandoEmpleado] = useState(null)
   const [editandoPlantilla, setEditandoPlantilla] = useState(null)
   const [message, setMessage] = useState('')
+  const [archivoExcel, setArchivoExcel] = useState(null)
+  const [resultadoImportacion, setResultadoImportacion] = useState(null)
   const [usuariosSistema, setUsuariosSistema] = useState([])
   const [usuarioForm, setUsuarioForm] = useState({ username: '', password: '', rol_id: '', empleado_id: '' })
   const [editandoUsuario, setEditandoUsuario] = useState(null)
@@ -265,6 +267,30 @@ export function Admin() {
       setMessage('❌ Error al crear colaborador')
     }
     setTimeout(() => setMessage(''), 3000)
+  }
+
+  async function importarEmpleadosExcel() {
+    if (!archivoExcel) {
+      setMessage('❌ Selecciona un archivo Excel')
+      return
+    }
+    
+    const formData = new FormData()
+    formData.append('archivo', archivoExcel)
+    
+    try {
+      const { data } = await api.post('/admin/empleados/importar-excel', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      setResultadoImportacion(data)
+      setMessage(`✅ Importación completada: ${data.exitosos} exitosos, ${data.errores.length} errores`)
+      setArchivoExcel(null)
+      cargar()
+    } catch (error) {
+      setMessage('❌ Error al importar colaboradores')
+      console.error(error)
+    }
+    setTimeout(() => setMessage(''), 5000)
   }
 
   function iniciarEdicionEmpleado(empleado) {
@@ -965,6 +991,40 @@ export function Admin() {
           <button className="btn">{editandoEmpleado ? '💾 Actualizar colaborador' : '➕ Crear colaborador'}</button>
           {editandoEmpleado && <button onClick={cancelarEdicion} style={{ padding: '0.75rem 1.5rem', background: '#64748b', border: 'none', borderRadius: '0.5rem', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>❌ Cancelar</button>}
         </form>
+
+        <div className="panel" style={{ padding: '1rem', background: 'rgba(59, 130, 246, 0.05)', border: '1px solid #3b82f6' }}>
+          <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '0 0 0.75rem 0', color: '#3b82f6' }}>📊 Importar colaboradores desde Excel</h4>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => setArchivoExcel(e.target.files[0])}
+              style={{ flex: 1 }}
+            />
+            <button onClick={importarEmpleadosExcel} className="btn" disabled={!archivoExcel}>
+              📥 Importar
+            </button>
+          </div>
+          <p style={{ fontSize: '0.75rem', color: '#64748b', margin: '0.5rem 0 0' }}>
+            Formato: Columna A (número), B (nombre), C (departamento ID o nombre), D (puesto)
+          </p>
+          {resultadoImportacion && (
+            <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: resultadoImportacion.errores.length > 0 ? 'rgba(234, 179, 8, 0.1)' : 'rgba(5, 150, 105, 0.1)', borderRadius: '0.5rem' }}>
+              <p style={{ fontSize: '0.875rem', margin: 0, fontWeight: 700 }}>
+                Resultado: {resultadoImportacion.exitosos} exitosos, {resultadoImportacion.errores.length} errores de {resultadoImportacion.total_procesados}
+              </p>
+              {resultadoImportacion.errores.length > 0 && (
+                <div style={{ marginTop: '0.5rem', maxHeight: '150px', overflowY: 'auto' }}>
+                  {resultadoImportacion.errores.map((error, idx) => (
+                    <p key={idx} style={{ fontSize: '0.75rem', color: '#eab308', margin: '0.25rem 0' }}>
+                      Fila {error.fila}: {error.mensaje}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           <input className="input" placeholder="🔍 Buscar por número, nombre o puesto..." value={filtro} onChange={(e) => setFiltro(e.target.value)} style={{ flex: 1 }} />
