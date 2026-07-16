@@ -74,6 +74,7 @@ class Empleado(Base):
     departamento_id: Mapped[int] = mapped_column(ForeignKey("departamentos.id"), nullable=False)
     puesto: Mapped[str] = mapped_column(String(120), nullable=False)
     plantilla_turno_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
+    fecha_inicio_ciclo: Mapped[date | None] = mapped_column(Date, nullable=True)
     estado_actual: Mapped[EstadoEmpleado] = mapped_column(Enum(EstadoEmpleado), default=EstadoEmpleado.FUERA, nullable=False)
     activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -132,12 +133,16 @@ class PlantillaTurno(Base):
     
     # Campos para rotación de turnos
     es_rotativa: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ciclo_rotacion_semanas: Mapped[int] = mapped_column(Integer, default=2, nullable=False)  # 2 o 3 semanas
+    fecha_inicio_ciclo: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     plantilla_semana_par_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
     plantilla_semana_impar_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
+    plantilla_semana_3_id: Mapped[int | None] = mapped_column(ForeignKey("plantillas_turnos.id"), nullable=True)
     
     # Relaciones para rotación
     plantilla_semana_par: Mapped["PlantillaTurno"] = relationship(foreign_keys=[plantilla_semana_par_id], remote_side=[id])
     plantilla_semana_impar: Mapped["PlantillaTurno"] = relationship(foreign_keys=[plantilla_semana_impar_id], remote_side=[id])
+    plantilla_semana_3: Mapped["PlantillaTurno"] = relationship(foreign_keys=[plantilla_semana_3_id], remote_side=[id])
 
 
 class DetallePlantillaTurno(Base):

@@ -29,6 +29,7 @@ class EmpleadoCreate(BaseModel):
     departamento_id: int
     puesto: str
     activo: bool = True
+    fecha_inicio_ciclo: date | None = None
 
 
 class EmpleadoUpdate(BaseModel):
@@ -37,6 +38,7 @@ class EmpleadoUpdate(BaseModel):
     puesto: str | None = None
     activo: bool | None = None
     estado_actual: EstadoEmpleado | None = None
+    fecha_inicio_ciclo: date | None = None
 
 
 class EmpleadoOut(BaseModel):
@@ -49,6 +51,7 @@ class EmpleadoOut(BaseModel):
     estado_actual: EstadoEmpleado
     activo: bool
     plantilla_turno_id: int | None = None
+    fecha_inicio_ciclo: date | None = None
 
 
 class ImportarEmpleadosResponse(BaseModel):
@@ -63,8 +66,11 @@ class PlantillaTurnoOut(BaseModel):
     nombre: str
     descripcion: str | None = None
     es_rotativa: bool = False
+    ciclo_rotacion_semanas: int = 2
+    fecha_inicio_ciclo: date = Field(default_factory=date.today)
     plantilla_semana_par_id: int | None = None
     plantilla_semana_impar_id: int | None = None
+    plantilla_semana_3_id: int | None = None
 
 
 class DetallePlantillaOut(BaseModel):

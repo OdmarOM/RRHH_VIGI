@@ -401,12 +401,20 @@ def get_empleado_turno(db: Session, empleado: Empleado, dia_semana: int, fecha: 
     if empleado.plantilla_turno_id:
         plantilla = db.get(PlantillaTurno, empleado.plantilla_turno_id)
         if plantilla:
-            # Si la plantilla es rotativa, determinar cuál usar según semana par/impar
+            # Si la plantilla es rotativa, determinar cuál usar según el ciclo de semanas
             if plantilla.es_rotativa:
                 if fecha is None:
                     fecha = utc_now().date()
-                semana_numero = fecha.isocalendar()[1]  # Número de semana del año
-                if semana_numero % 2 == 0:
+                ciclo = plantilla.ciclo_rotacion_semanas
+                # La fecha de inicio puede ser por empleado o por plantilla
+                fecha_inicio = empleado.fecha_inicio_ciclo or plantilla.fecha_inicio_ciclo
+                # Calcular semanas transcurridas desde el inicio del ciclo
+                dias_desde_inicio = (fecha - fecha_inicio).days
+                semanas_transcurridas = dias_desde_inicio // 7
+                semana_ciclo = (semanas_transcurridas % ciclo) + 1
+                if semana_ciclo == 3 and ciclo == 3:
+                    plantilla = plantilla.plantilla_semana_3
+                elif semana_ciclo == 2:
                     plantilla = plantilla.plantilla_semana_par
                 else:
                     plantilla = plantilla.plantilla_semana_impar

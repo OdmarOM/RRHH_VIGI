@@ -13,9 +13,13 @@ export function Admin() {
   const [tab, setTab] = useState('empleados')
   const [form, setForm] = useState({ numero_empleado: '', nombre_completo: '', departamento_id: '', puesto: '' })
   const [turnoForm, setTurnoForm] = useState({ empleado_id: '', dia_semana: 0, hora_entrada: '08:00', hora_salida: '17:00', tolerancia: 15, tolerancia_entrada_previa: 15, tolerancia_salida_posterior: 15, tolerancia_salida_previa: 5, es_descanso: false, es_por_asistencia: false })
-  const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '', es_rotativa: false, plantilla_semana_par_id: null, plantilla_semana_impar_id: null })
+  const lunesActual = new Date()
+  lunesActual.setDate(lunesActual.getDate() - ((lunesActual.getDay() + 6) % 7))
+  const [plantillaForm, setPlantillaForm] = useState({ nombre: '', descripcion: '', es_rotativa: false, ciclo_rotacion_semanas: 2, fecha_inicio_ciclo: lunesActual.toISOString().split('T')[0], plantilla_semana_par_id: null, plantilla_semana_impar_id: null, plantilla_semana_3_id: null })
   const [plantillaSeleccionada, setPlantillaSeleccionada] = useState('')
   const [plantillaEfectiva, setPlantillaEfectiva] = useState(null)
+  const [fechaPreview, setFechaPreview] = useState(new Date().toISOString().split('T')[0])
+  const [asignacionPlantilla, setAsignacionPlantilla] = useState({ plantilla_id: '', fecha_inicio_ciclo: lunesActual.toISOString().split('T')[0] })
   const [detallesTemporales, setDetallesTemporales] = useState({})
   const [editandoEmpleado, setEditandoEmpleado] = useState(null)
   const [editandoPlantilla, setEditandoPlantilla] = useState(null)
@@ -44,7 +48,7 @@ export function Admin() {
   const [correccionForm, setCorreccionForm] = useState({ empleado_id: '', empleado_busqueda: '', fecha: '', tipo_correccion: 'Horas_Laboradas', minutos_agregados: 0, motivo: '' })
   const [horasExtraPendientes, setHorasExtraPendientes] = useState([])
   const [reporteSalidasTemporales, setReporteSalidasTemporales] = useState([])
-  const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '', corte_semanal: false })
+  const [reporteForm, setReporteForm] = useState({ fecha_inicio: '', fecha_fin: '', empleado_id: '', departamento_id: '', corte_semanal: false })
   const [ausenciaForm, setAusenciaForm] = useState({ empleado_id: '', tipo_ausencia: 'Vacaciones', fecha_inicio: '', fecha_fin: '', pagada: true, porcentaje_aportacion: 100, motivo: '' })
   const [menuAbierto, setMenuAbierto] = useState(false)
   const rolUsuario = localStorage.getItem('rol')
@@ -494,6 +498,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.departamento_id) params.append('departamento_id', reporteForm.departamento_id)
       if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
       
       const { data } = await api.get(`/admin/reportes/horas-laboradas?${params}`)
@@ -512,6 +517,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.departamento_id) params.append('departamento_id', reporteForm.departamento_id)
       if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const { data } = await api.get(`/admin/reportes/horas-extra?${params}`)
@@ -529,6 +535,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.departamento_id) params.append('departamento_id', reporteForm.departamento_id)
 
       const { data } = await api.get(`/admin/reportes/salidas-temporales?${params}`)
       setReporteSalidasTemporales(data)
@@ -597,6 +604,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.departamento_id) params.append('departamento_id', reporteForm.departamento_id)
       if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const { data } = await api.get(`/admin/reportes/asistencias?${params}`)
@@ -614,6 +622,7 @@ export function Admin() {
       params.append('fecha_inicio', reporteForm.fecha_inicio)
       params.append('fecha_fin', reporteForm.fecha_fin)
       if (reporteForm.empleado_id) params.append('empleado_id', reporteForm.empleado_id)
+      if (reporteForm.departamento_id) params.append('departamento_id', reporteForm.departamento_id)
       if (reporteForm.corte_semanal) params.append('corte_semanal', 'true')
 
       const endpoint = tipo === 'horas-laboradas' ? '/admin/reportes/horas-laboradas/excel' :
@@ -734,7 +743,9 @@ export function Admin() {
     try {
       await api.post('/admin/plantillas-turnos', null, { params: plantillaForm })
       setMessage('✅ Plantilla creada')
-      setPlantillaForm({ nombre: '', descripcion: '', es_rotativa: false, plantilla_semana_par_id: null, plantilla_semana_impar_id: null })
+      const nuevoLunes = new Date()
+      nuevoLunes.setDate(nuevoLunes.getDate() - ((nuevoLunes.getDay() + 6) % 7))
+      setPlantillaForm({ nombre: '', descripcion: '', es_rotativa: false, ciclo_rotacion_semanas: 2, fecha_inicio_ciclo: nuevoLunes.toISOString().split('T')[0], plantilla_semana_par_id: null, plantilla_semana_impar_id: null, plantilla_semana_3_id: null })
       cargar()
     } catch {
       setMessage('❌ Error al crear plantilla')
@@ -742,9 +753,9 @@ export function Admin() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  async function actualizarPlantilla(id, nombre, descripcion, es_rotativa, plantilla_semana_par_id, plantilla_semana_impar_id) {
+  async function actualizarPlantilla(id, nombre, descripcion, es_rotativa, ciclo_rotacion_semanas, fecha_inicio_ciclo, plantilla_semana_par_id, plantilla_semana_impar_id, plantilla_semana_3_id) {
     try {
-      await api.put(`/admin/plantillas-turnos/${id}`, null, { params: { nombre, descripcion, es_rotativa, plantilla_semana_par_id, plantilla_semana_impar_id } })
+      await api.put(`/admin/plantillas-turnos/${id}`, null, { params: { nombre, descripcion, es_rotativa, ciclo_rotacion_semanas, fecha_inicio_ciclo, plantilla_semana_par_id, plantilla_semana_impar_id, plantilla_semana_3_id } })
       setMessage('✅ Plantilla actualizada')
       cargar()
     } catch {
@@ -830,9 +841,10 @@ export function Admin() {
     }
   }
 
-  async function cargarPlantillaEfectiva(empleadoId) {
+  async function cargarPlantillaEfectiva(empleadoId, fecha = null) {
     try {
-      const { data } = await api.get(`/admin/empleados/${empleadoId}/plantilla-efectiva`)
+      const params = fecha ? { params: { fecha } } : {}
+      const { data } = await api.get(`/admin/empleados/${empleadoId}/plantilla-efectiva`, params)
       setPlantillaEfectiva(data)
       if (data.plantilla_efectiva) {
         cargarDetallesPlantilla(data.plantilla_efectiva.id)
@@ -842,9 +854,10 @@ export function Admin() {
     }
   }
 
-  async function asignarPlantillaEmpleado(empleadoId, plantillaId) {
+  async function asignarPlantillaEmpleado(empleadoId, plantillaId, fechaInicioCiclo = null) {
     try {
-      await api.put(`/admin/empleados/${empleadoId}/plantilla-turno/${plantillaId}`)
+      const params = fechaInicioCiclo ? { params: { fecha_inicio_ciclo: fechaInicioCiclo } } : {}
+      await api.put(`/admin/empleados/${empleadoId}/plantilla-turno/${plantillaId}`, null, params)
       setMessage('✅ Plantilla asignada')
       await cargar()
     } catch {
@@ -859,6 +872,10 @@ export function Admin() {
       await api.post(`/admin/empleados/${empleadoId}/romper-plantilla`)
       setMessage('✅ Referencia a plantilla rota, horario personal creado')
       await cargar()
+      setPlantillaEfectiva(null)
+      setDetallesPlantilla([])
+      setPlantillaSeleccionada('')
+      setTurnosTemporales({})
     } catch {
       setMessage('❌ Error al romper referencia a plantilla')
     }
@@ -901,6 +918,18 @@ export function Admin() {
   }
 
   useEffect(() => { cargar() }, [])
+
+  useEffect(() => {
+    if (turnoForm.empleado_id) {
+      const empleado = empleados.find(e => e.id === Number(turnoForm.empleado_id))
+      const plantilla = empleado?.plantilla_turno_id ? plantillas.find(p => p.id === empleado.plantilla_turno_id) : null
+      const fechaInicio = empleado?.fecha_inicio_ciclo || plantilla?.fecha_inicio_ciclo || lunesActual.toISOString().split('T')[0]
+      setAsignacionPlantilla({
+        plantilla_id: plantilla?.id || '',
+        fecha_inicio_ciclo: fechaInicio
+      })
+    }
+  }, [turnoForm.empleado_id, empleados, plantillas])
 
   const empleadosFiltrados = empleados.filter(e => 
     e.numero_empleado.toLowerCase().includes(filtro.toLowerCase()) ||
@@ -1117,7 +1146,7 @@ export function Admin() {
             
             // Cargar plantilla efectiva si el empleado tiene plantilla asignada
             if (empleado?.plantilla_turno_id && !plantillaEfectiva) {
-              cargarPlantillaEfectiva(empleado.id)
+              cargarPlantillaEfectiva(empleado.id, fechaPreview)
             }
             
             return (
@@ -1139,16 +1168,50 @@ export function Admin() {
                 </div>
                 <div style={{ marginBottom: '1rem', padding: '1rem', background: 'rgba(30,41,59,0.5)', borderRadius: '0.5rem' }}>
                   <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: '0 0 0.5rem 0' }}>Plantilla de Turno</h4>
-                  {plantillaEfectiva?.plantilla_efectiva ? (
+                  {plantillaAsignada ? (
                     <div>
-                      {plantillaEfectiva.es_rotativa && (
+                      {plantillaAsignada.es_rotativa && (
                         <div style={{ marginBottom: '0.5rem', padding: '0.5rem', background: 'rgba(168, 85, 247, 0.1)', borderRadius: '0.25rem', fontSize: '0.75rem', color: '#a855f7' }}>
-                          🔄 Plantilla rotativa - Esta semana: {plantillaEfectiva.plantilla_efectiva.nombre}
+                          🔄 Plantilla rotativa
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        <span style={{ color: '#94a3b8', fontSize: '0.875rem' }}>Previsualizar fecha:</span>
+                        <input
+                          type="date"
+                          className="input"
+                          value={fechaPreview}
+                          onChange={(e) => {
+                            setFechaPreview(e.target.value)
+                            cargarPlantillaEfectiva(Number(turnoForm.empleado_id), e.target.value)
+                          }}
+                        />
+                      </div>
+                      {plantillaAsignada.es_rotativa && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                          <span style={{ color: '#94a3b8', fontSize: '0.875rem' }}>Inicio ciclo (colaborador):</span>
+                          <input
+                            type="date"
+                            className="input"
+                            value={asignacionPlantilla.fecha_inicio_ciclo}
+                            onChange={(e) => setAsignacionPlantilla({ ...asignacionPlantilla, fecha_inicio_ciclo: e.target.value })}
+                          />
+                          <button
+                            className="btn-sm btn-sm-blue"
+                            onClick={() => asignarPlantillaEmpleado(Number(turnoForm.empleado_id), plantillaAsignada.id, asignacionPlantilla.fecha_inicio_ciclo)}
+                          >
+                            Actualizar inicio
+                          </button>
+                        </div>
+                      )}
+                      {plantillaEfectiva?.plantilla_efectiva && plantillaAsignada.es_rotativa && (
+                        <div style={{ marginBottom: '0.5rem', padding: '0.5rem', background: 'rgba(168, 85, 247, 0.1)', borderRadius: '0.25rem', fontSize: '0.75rem', color: '#a855f7' }}>
+                          Semana {plantillaEfectiva.semana_ciclo} de {plantillaEfectiva.ciclo_rotacion_semanas} | Inicio ciclo: {plantillaEfectiva.fecha_inicio_ciclo} | Consulta: {plantillaEfectiva.fecha_consulta}
                         </div>
                       )}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaEfectiva.plantilla_efectiva.nombre}</span>
-                        <button 
+                        <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
+                        <button
                           onClick={() => romperPlantillaEmpleado(Number(turnoForm.empleado_id))}
                           className="btn-sm btn-sm-yellow"
                         >
@@ -1156,31 +1219,37 @@ export function Admin() {
                         </button>
                       </div>
                     </div>
-                  ) : plantillaAsignada ? (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                      <span style={{ color: '#059669', fontWeight: 700 }}>📋 {plantillaAsignada.nombre}</span>
-                      <button 
-                        onClick={() => romperPlantillaEmpleado(Number(turnoForm.empleado_id))}
-                        className="btn-sm btn-sm-yellow"
-                      >
-                        Romper referencia (crear horario personal)
-                      </button>
-                    </div>
                   ) : (
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <select 
-                        className="input" 
-                        style={{ flex: 1 }}
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            asignarPlantillaEmpleado(Number(turnoForm.empleado_id), Number(e.target.value))
-                            e.target.value = ''
-                          }
-                        }}
-                      >
-                        <option value="">Seleccionar plantilla...</option>
-                        {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-                      </select>
+                    <div>
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        <select
+                          className="input"
+                          style={{ flex: 1, minWidth: '200px' }}
+                          value={asignacionPlantilla.plantilla_id}
+                          onChange={(e) => setAsignacionPlantilla({ ...asignacionPlantilla, plantilla_id: e.target.value })}
+                        >
+                          <option value="">Seleccionar plantilla...</option>
+                          {plantillas.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                        </select>
+                        {asignacionPlantilla.plantilla_id && plantillas.find(p => p.id === Number(asignacionPlantilla.plantilla_id))?.es_rotativa && (
+                          <input
+                            type="date"
+                            className="input"
+                            value={asignacionPlantilla.fecha_inicio_ciclo}
+                            onChange={(e) => setAsignacionPlantilla({ ...asignacionPlantilla, fecha_inicio_ciclo: e.target.value })}
+                          />
+                        )}
+                        <button
+                          className="btn-sm btn-sm-blue"
+                          onClick={() => {
+                            if (asignacionPlantilla.plantilla_id) {
+                              asignarPlantillaEmpleado(Number(turnoForm.empleado_id), Number(asignacionPlantilla.plantilla_id), asignacionPlantilla.fecha_inicio_ciclo)
+                            }
+                          }}
+                        >
+                          Asignar
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1435,34 +1504,67 @@ export function Admin() {
                     checked={plantillaForm.es_rotativa || false}
                     onChange={(e) => setPlantillaForm({ ...plantillaForm, es_rotativa: e.target.checked })}
                   />
-                  Plantilla rotativa (semana par/impar)
+                  Plantilla rotativa
                 </label>
               </div>
               {plantillaForm.es_rotativa && (
-                <div style={{ display: 'flex', gap: '0.75rem' }}>
-                  <select
-                    className="input"
-                    value={plantillaForm.plantilla_semana_par_id || ''}
-                    onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_par_id: e.target.value ? parseInt(e.target.value) : null })}
-                    style={{ flex: 1 }}
-                  >
-                    <option value="">Plantilla semana par</option>
-                    {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
-                      <option key={p.id} value={p.id}>{p.nombre}</option>
-                    ))}
-                  </select>
-                  <select
-                    className="input"
-                    value={plantillaForm.plantilla_semana_impar_id || ''}
-                    onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_impar_id: e.target.value ? parseInt(e.target.value) : null })}
-                    style={{ flex: 1 }}
-                  >
-                    <option value="">Plantilla semana impar</option>
-                    {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
-                      <option key={p.id} value={p.id}>{p.nombre}</option>
-                    ))}
-                  </select>
-                </div>
+                <>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <select
+                      className="input"
+                      value={plantillaForm.ciclo_rotacion_semanas || 2}
+                      onChange={(e) => setPlantillaForm({ ...plantillaForm, ciclo_rotacion_semanas: parseInt(e.target.value) })}
+                      style={{ flex: 1 }}
+                    >
+                      <option value={2}>Ciclo de 2 semanas</option>
+                      <option value={3}>Ciclo de 3 semanas</option>
+                    </select>
+                    <input
+                      type="date"
+                      className="input"
+                      value={plantillaForm.fecha_inicio_ciclo || ''}
+                      onChange={(e) => setPlantillaForm({ ...plantillaForm, fecha_inicio_ciclo: e.target.value })}
+                      style={{ flex: 1 }}
+                    />
+                    <select
+                      className="input"
+                      value={plantillaForm.plantilla_semana_impar_id || ''}
+                      onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_impar_id: e.target.value ? parseInt(e.target.value) : null })}
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">Plantilla semana 1</option>
+                      {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
+                        <option key={p.id} value={p.id}>{p.nombre}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <select
+                      className="input"
+                      value={plantillaForm.plantilla_semana_par_id || ''}
+                      onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_par_id: e.target.value ? parseInt(e.target.value) : null })}
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">Plantilla semana 2</option>
+                      {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
+                        <option key={p.id} value={p.id}>{p.nombre}</option>
+                      ))}
+                    </select>
+                    {plantillaForm.ciclo_rotacion_semanas === 3 && (
+                      <select
+                        className="input"
+                        value={plantillaForm.plantilla_semana_3_id || ''}
+                        onChange={(e) => setPlantillaForm({ ...plantillaForm, plantilla_semana_3_id: e.target.value ? parseInt(e.target.value) : null })}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="">Plantilla semana 3</option>
+                        {plantillas.filter(p => p.id !== plantillaForm.id).map(p => (
+                          <option key={p.id} value={p.id}>{p.nombre}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </>
               )}
               <button className="btn" onClick={crearPlantilla}>➕ Crear</button>
             </div>
@@ -2345,6 +2447,10 @@ export function Admin() {
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
+            <select className="input" value={reporteForm.departamento_id} onChange={(e) => setReporteForm({ ...reporteForm, departamento_id: e.target.value })}>
+              <option value="">Todas las áreas</option>
+              {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+            </select>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
               <input 
                 type="checkbox" 
@@ -2417,6 +2523,10 @@ export function Admin() {
             <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <select className="input" value={reporteForm.departamento_id} onChange={(e) => setReporteForm({ ...reporteForm, departamento_id: e.target.value })}>
+              <option value="">Todas las áreas</option>
+              {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
             </select>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
               <input 
@@ -2517,6 +2627,10 @@ export function Admin() {
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
             </select>
+            <select className="input" value={reporteForm.departamento_id} onChange={(e) => setReporteForm({ ...reporteForm, departamento_id: e.target.value })}>
+              <option value="">Todas las áreas</option>
+              {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+            </select>
             <button className="btn">📊 Generar Reporte</button>
           </form>
 
@@ -2560,6 +2674,10 @@ export function Admin() {
             <select className="input" value={reporteForm.empleado_id} onChange={(e) => setReporteForm({ ...reporteForm, empleado_id: e.target.value })}>
               <option value="">Todos los colaboradores</option>
               {empleados.map(e => <option key={e.id} value={e.id}>{e.numero_empleado} - {e.nombre_completo}</option>)}
+            </select>
+            <select className="input" value={reporteForm.departamento_id} onChange={(e) => setReporteForm({ ...reporteForm, departamento_id: e.target.value })}>
+              <option value="">Todas las áreas</option>
+              {departamentos.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
             </select>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: '#fff' }}>
               <input 

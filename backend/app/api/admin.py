@@ -260,19 +260,30 @@ def eliminar_turno(id: int, db: Session = Depends(get_db)):
 # Plantillas de turnos
 @router.post("/plantillas-turnos", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
 def crear_plantilla(
-    nombre: str, 
-    descripcion: str | None = None, 
+    nombre: str,
+    descripcion: str | None = None,
     es_rotativa: bool = False,
+    ciclo_rotacion_semanas: int = 2,
+    fecha_inicio_ciclo: str | None = None,
     plantilla_semana_par_id: int | None = None,
     plantilla_semana_impar_id: int | None = None,
+    plantilla_semana_3_id: int | None = None,
     db: Session = Depends(get_db)
 ):
+    from datetime import date
+    if fecha_inicio_ciclo:
+        fecha_inicio = date.fromisoformat(fecha_inicio_ciclo)
+    else:
+        fecha_inicio = date.today()
     plantilla = PlantillaTurno(
-        nombre=nombre, 
+        nombre=nombre,
         descripcion=descripcion,
         es_rotativa=es_rotativa,
+        ciclo_rotacion_semanas=ciclo_rotacion_semanas,
+        fecha_inicio_ciclo=fecha_inicio,
         plantilla_semana_par_id=plantilla_semana_par_id,
-        plantilla_semana_impar_id=plantilla_semana_impar_id
+        plantilla_semana_impar_id=plantilla_semana_impar_id,
+        plantilla_semana_3_id=plantilla_semana_3_id
     )
     db.add(plantilla)
     db.commit()
@@ -301,12 +312,15 @@ def eliminar_plantilla(id: int, db: Session = Depends(get_db)):
 
 @router.put("/plantillas-turnos/{id}", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
 def actualizar_plantilla(
-    id: int, 
-    nombre: str, 
+    id: int,
+    nombre: str,
     descripcion: str | None = None,
     es_rotativa: bool | None = None,
+    ciclo_rotacion_semanas: int | None = None,
+    fecha_inicio_ciclo: str | None = None,
     plantilla_semana_par_id: int | None = None,
     plantilla_semana_impar_id: int | None = None,
+    plantilla_semana_3_id: int | None = None,
     db: Session = Depends(get_db)
 ):
     plantilla = db.get(PlantillaTurno, id)
@@ -317,10 +331,17 @@ def actualizar_plantilla(
         plantilla.descripcion = descripcion
     if es_rotativa is not None:
         plantilla.es_rotativa = es_rotativa
+    if ciclo_rotacion_semanas is not None:
+        plantilla.ciclo_rotacion_semanas = ciclo_rotacion_semanas
+    if fecha_inicio_ciclo is not None:
+        from datetime import date
+        plantilla.fecha_inicio_ciclo = date.fromisoformat(fecha_inicio_ciclo)
     if plantilla_semana_par_id is not None:
         plantilla.plantilla_semana_par_id = plantilla_semana_par_id
     if plantilla_semana_impar_id is not None:
         plantilla.plantilla_semana_impar_id = plantilla_semana_impar_id
+    if plantilla_semana_3_id is not None:
+        plantilla.plantilla_semana_3_id = plantilla_semana_3_id
     db.commit()
     db.refresh(plantilla)
     return plantilla
@@ -378,19 +399,27 @@ def obtener_plantilla_efectiva(
     
     # Si la plantilla es rotativa, determinar cuál usar según fecha
     plantilla_efectiva = plantilla
+    if fecha:
+        fecha_obj = datetime.fromisoformat(fecha).date()
+    else:
+        from app.utils import utc_now
+        fecha_obj = utc_now().date()
+
+    semana_ciclo = None
     if plantilla.es_rotativa:
-        if fecha:
-            fecha_obj = datetime.fromisoformat(fecha).date()
-        else:
-            from app.utils import utc_now
-            fecha_obj = utc_now().date()
-        
-        semana_numero = fecha_obj.isocalendar()[1]
-        if semana_numero % 2 == 0:
+        ciclo = plantilla.ciclo_rotacion_semanas
+        # Fecha de inicio del ciclo: por empleado o por plantilla
+        fecha_inicio = empleado.fecha_inicio_ciclo or plantilla.fecha_inicio_ciclo
+        dias_desde_inicio = (fecha_obj - fecha_inicio).days
+        semanas_transcurridas = dias_desde_inicio // 7
+        semana_ciclo = (semanas_transcurridas % ciclo) + 1
+        if semana_ciclo == 3 and ciclo == 3:
+            plantilla_efectiva = plantilla.plantilla_semana_3
+        elif semana_ciclo == 2:
             plantilla_efectiva = plantilla.plantilla_semana_par
         else:
             plantilla_efectiva = plantilla.plantilla_semana_impar
-    
+
     return {
         "plantilla_efectiva": {
             "id": plantilla_efectiva.id,
@@ -398,6 +427,10 @@ def obtener_plantilla_efectiva(
             "descripcion": plantilla_efectiva.descripcion
         } if plantilla_efectiva else None,
         "es_rotativa": plantilla.es_rotativa,
+        "ciclo_rotacion_semanas": plantilla.ciclo_rotacion_semanas,
+        "semana_ciclo": semana_ciclo,
+        "fecha_inicio_ciclo": plantilla.fecha_inicio_ciclo.isoformat(),
+        "fecha_consulta": fecha_obj.isoformat(),
         "plantilla_base": {
             "id": plantilla.id,
             "nombre": plantilla.nombre
@@ -649,20 +682,28 @@ def actualizar_detalle_plantilla(plantilla_id: int, detalle_id: int, data: dict,
 
 
 @router.put("/empleados/{empleado_id}/plantilla-turno/{plantilla_id}", dependencies=[Depends(require_roles(RolNombre.ADMINISTRADOR))])
-def asignar_plantilla_empleado(empleado_id: int, plantilla_id: int, db: Session = Depends(get_db)):
+def asignar_plantilla_empleado(
+    empleado_id: int,
+    plantilla_id: int,
+    fecha_inicio_ciclo: str | None = None,
+    db: Session = Depends(get_db)
+):
     empleado = db.get(Empleado, empleado_id)
     if not empleado:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Colaborador no encontrado")
     plantilla = db.get(PlantillaTurno, plantilla_id)
     if not plantilla:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plantilla no encontrada")
-    
+
     # Eliminar turnos individuales existentes (ya que usará plantilla)
     for turno in db.scalars(select(TurnoHorario).where(TurnoHorario.empleado_id == empleado_id)):
         db.delete(turno)
-    
-    # Solo asignar la referencia a la plantilla, no crear turnos individuales
+
+    # Asignar plantilla y, si es rotativa, la fecha de inicio del ciclo para este colaborador
     empleado.plantilla_turno_id = plantilla_id
+    if fecha_inicio_ciclo:
+        from datetime import date
+        empleado.fecha_inicio_ciclo = date.fromisoformat(fecha_inicio_ciclo)
     db.commit()
     return {"ok": True}
 
@@ -681,7 +722,28 @@ def romper_plantilla_empleado(empleado_id: int, db: Session = Depends(get_db)):
     if not plantilla:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plantilla no encontrada")
     
-    # Crear o actualizar turnos individuales basados en la plantilla actual
+    # Si la plantilla es rotativa, usar la plantilla efectiva de la semana actual
+    plantilla_base = plantilla
+    if plantilla.es_rotativa:
+        from app.utils import utc_now
+        fecha_actual = utc_now().date()
+        ciclo = plantilla.ciclo_rotacion_semanas
+        # Fecha de inicio del ciclo: por empleado o por plantilla
+        fecha_inicio = empleado.fecha_inicio_ciclo or plantilla.fecha_inicio_ciclo
+        dias_desde_inicio = (fecha_actual - fecha_inicio).days
+        semanas_transcurridas = dias_desde_inicio // 7
+        semana_ciclo = (semanas_transcurridas % ciclo) + 1
+        if semana_ciclo == 3 and ciclo == 3:
+            plantilla = plantilla.plantilla_semana_3
+        elif semana_ciclo == 2:
+            plantilla = plantilla.plantilla_semana_par
+        else:
+            plantilla = plantilla.plantilla_semana_impar
+
+        if not plantilla:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No se encontró la plantilla efectiva para la semana actual")
+    
+    # Crear o actualizar turnos individuales basados en la plantilla efectiva
     detalles = db.scalars(select(DetallePlantillaTurno).where(DetallePlantillaTurno.plantilla_id == plantilla.id)).all()
     for detalle in detalles:
         if not detalle.es_descanso and detalle.hora_entrada_oficial and detalle.hora_salida_oficial:
@@ -960,6 +1022,7 @@ def reporte_horas_laboradas(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -977,15 +1040,19 @@ def reporte_horas_laboradas(
             dias_adelante = (4 - fin.weekday()) % 7
             fin = fin + timedelta(days=dias_adelante)
     
-    query = select(RegistroAsistencia).where(
+    query = select(RegistroAsistencia).join(Empleado).where(
         RegistroAsistencia.fecha_turno >= inicio,
         RegistroAsistencia.fecha_turno <= fin,
         RegistroAsistencia.hora_entrada_real.is_not(None),
-        RegistroAsistencia.hora_salida_real.is_not(None)
+        RegistroAsistencia.hora_salida_real.is_not(None),
+        Empleado.activo == True
     )
     
     if empleado_id:
         query = query.where(RegistroAsistencia.empleado_id == empleado_id)
+    
+    if departamento_id:
+        query = query.where(Empleado.departamento_id == departamento_id)
     
     registros = db.scalars(query.order_by(RegistroAsistencia.fecha_turno)).all()
     
@@ -1053,6 +1120,9 @@ def reporte_horas_laboradas(
                 
                 reporte.append({
                     "empleado_id": reg.empleado_id,
+                    "nombre_empleado": empleado.nombre_completo,
+                    "numero_empleado": empleado.numero_empleado,
+                    "departamento": empleado.departamento.nombre,
                     "fecha": reg.fecha_turno.isoformat(),
                     "hora_entrada": reg.hora_entrada_real.isoformat(),
                     "hora_salida": reg.hora_salida_real.isoformat(),
@@ -1100,6 +1170,7 @@ def reporte_horas_laboradas(
                         "empleado_id": reg.empleado_id,
                         "nombre_empleado": empleado.nombre_completo,
                         "numero_empleado": empleado.numero_empleado,
+                        "departamento": empleado.departamento.nombre,
                         "fecha": reg.fecha_turno.isoformat(),
                         "hora_entrada": inicio_laborado.isoformat(),
                         "hora_salida": fin_laborado.isoformat(),
@@ -1292,6 +1363,7 @@ def reporte_horas_extra(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -1314,17 +1386,24 @@ def reporte_horas_extra(
     # 1. Obtener bloques de horas extra de la base de datos (detectados por calcular_y_registrar_bloques_horas_extra)
     query_bloques = select(BloqueHorasExtra, RegistroAsistencia).join(
         RegistroAsistencia, BloqueHorasExtra.asistencia_id == RegistroAsistencia.id
+    ).join(
+        Empleado, RegistroAsistencia.empleado_id == Empleado.id
     ).where(
         RegistroAsistencia.fecha_turno >= inicio,
-        RegistroAsistencia.fecha_turno <= fin
+        RegistroAsistencia.fecha_turno <= fin,
+        Empleado.activo == True
     )
     
     if empleado_id:
         query_bloques = query_bloques.where(RegistroAsistencia.empleado_id == empleado_id)
     
+    if departamento_id:
+        query_bloques = query_bloques.where(Empleado.departamento_id == departamento_id)
+    
     resultados_bloques = db.execute(query_bloques.order_by(RegistroAsistencia.fecha_turno, BloqueHorasExtra.hora_inicio)).all()
     
     for bloque, reg in resultados_bloques:
+        empleado = reg.empleado
         # Determinar estado basado en validaciones
         if bloque.validacion_rrhh:
             estado = "Autorizado RRHH"
@@ -1335,7 +1414,10 @@ def reporte_horas_extra(
         
         reporte.append({
             "tipo": bloque.tipo_bloque,
-            "empleado_id": reg.empleado_id,
+            "empleado_id": empleado.id,
+            "nombre_empleado": empleado.nombre_completo,
+            "numero_empleado": empleado.numero_empleado,
+            "departamento": empleado.departamento.nombre,
             "fecha": reg.fecha_turno.isoformat(),
             "bloque_id": bloque.id,
             "hora_inicio": bloque.hora_inicio.isoformat() if bloque.hora_inicio else None,
@@ -1363,10 +1445,18 @@ def reporte_horas_extra(
     resultados_visitas = db.execute(query_visitas.order_by(RegistroAsistencia.fecha_turno, Visita.fecha_visita)).all()
     
     for visita, reg in resultados_visitas:
+        empleado = reg.empleado
+        if departamento_id and empleado.departamento_id != departamento_id:
+            continue
+        if not empleado.activo:
+            continue
         minutos_visita = visita.minutos_duracion if visita.minutos_duracion else 0
         reporte.append({
             "tipo": "Visita_Pagada",
-            "empleado_id": reg.empleado_id,
+            "empleado_id": empleado.id,
+            "nombre_empleado": empleado.nombre_completo,
+            "numero_empleado": empleado.numero_empleado,
+            "departamento": empleado.departamento.nombre,
             "fecha": reg.fecha_turno.isoformat(),
             "visita_id": visita.id,
             "fecha_visita": visita.fecha_visita.isoformat(),
@@ -1416,6 +1506,7 @@ def reporte_asistencias(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -1450,6 +1541,8 @@ def reporte_asistencias(
     empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
+    if departamento_id:
+        empleados_query = empleados_query.where(Empleado.departamento_id == departamento_id)
     
     empleados = db.scalars(empleados_query).all()
     
@@ -1560,6 +1653,7 @@ def exportar_horas_laboradas_excel(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -1588,13 +1682,18 @@ def exportar_horas_laboradas_excel(
 
     registros = db.scalars(query.order_by(RegistroAsistencia.fecha_turno)).all()
 
-    # Obtener todos los departamentos
-    departamentos = db.scalars(select(Departamento)).all()
+    # Obtener todos los departamentos o solo el filtrado
+    departamentos_query = select(Departamento)
+    if departamento_id:
+        departamentos_query = departamentos_query.where(Departamento.id == departamento_id)
+    departamentos = db.scalars(departamentos_query).all()
 
-    # Obtener todos los empleados
-    empleados_query = select(Empleado)
+    # Obtener todos los empleados activos
+    empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
+    if departamento_id:
+        empleados_query = empleados_query.where(Empleado.departamento_id == departamento_id)
     empleados = db.scalars(empleados_query).all()
 
     # Calcular todos los días en el rango
@@ -1695,6 +1794,7 @@ def exportar_horas_extra_excel(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     corte_semanal: bool = False,
     db: Session = Depends(get_db)
 ):
@@ -1723,11 +1823,16 @@ def exportar_horas_extra_excel(
 
     registros = db.scalars(query.order_by(RegistroAsistencia.fecha_turno)).all()
 
-    departamentos = db.scalars(select(Departamento)).all()
+    departamentos_query = select(Departamento)
+    if departamento_id:
+        departamentos_query = departamentos_query.where(Departamento.id == departamento_id)
+    departamentos = db.scalars(departamentos_query).all()
 
-    empleados_query = select(Empleado)
+    empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
+    if departamento_id:
+        empleados_query = empleados_query.where(Empleado.departamento_id == departamento_id)
     empleados = db.scalars(empleados_query).all()
 
     dias_en_rango = []
@@ -1860,6 +1965,7 @@ def exportar_asistencias_excel(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     db: Session = Depends(get_db)
 ):
     from datetime import datetime, timedelta
@@ -1880,12 +1986,17 @@ def exportar_asistencias_excel(
 
     registros = db.scalars(query.order_by(RegistroAsistencia.fecha_turno)).all()
 
-    departamentos = db.scalars(select(Departamento)).all()
+    departamentos_query = select(Departamento)
+    if departamento_id:
+        departamentos_query = departamentos_query.where(Departamento.id == departamento_id)
+    departamentos = db.scalars(departamentos_query).all()
 
     # Incluir TODOS los empleados activos
     empleados_query = select(Empleado).where(Empleado.activo == True)
     if empleado_id:
         empleados_query = empleados_query.where(Empleado.id == empleado_id)
+    if departamento_id:
+        empleados_query = empleados_query.where(Empleado.departamento_id == departamento_id)
     empleados = db.scalars(empleados_query).all()
 
     dias_en_rango = []
@@ -2031,6 +2142,7 @@ def reporte_salidas_temporales(
     fecha_inicio: str,
     fecha_fin: str,
     empleado_id: int | None = None,
+    departamento_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Reporte detallado de salidas temporales (comer, mandado, permisos)"""
@@ -2046,10 +2158,14 @@ def reporte_salidas_temporales(
         .join(Empleado, RegistroAsistencia.empleado_id == Empleado.id)
         .where(RegistroAsistencia.fecha_turno >= fecha_inicio_dt)
         .where(RegistroAsistencia.fecha_turno <= fecha_fin_dt)
+        .where(Empleado.activo == True)
     )
 
     if empleado_id:
         query = query.where(RegistroAsistencia.empleado_id == empleado_id)
+
+    if departamento_id:
+        query = query.where(Empleado.departamento_id == departamento_id)
 
     resultados = db.execute(query.order_by(SalidaTemporal.hora_salida.desc())).all()
 
