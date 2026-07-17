@@ -402,7 +402,6 @@ def obtener_plantilla_efectiva(
     if fecha:
         fecha_obj = datetime.fromisoformat(fecha).date()
     else:
-        from app.utils import utc_now
         fecha_obj = utc_now().date()
 
     semana_ciclo = None
@@ -725,7 +724,6 @@ def romper_plantilla_empleado(empleado_id: int, db: Session = Depends(get_db)):
     # Si la plantilla es rotativa, usar la plantilla efectiva de la semana actual
     plantilla_base = plantilla
     if plantilla.es_rotativa:
-        from app.utils import utc_now
         fecha_actual = utc_now().date()
         ciclo = plantilla.ciclo_rotacion_semanas
         # Fecha de inicio del ciclo: por empleado o por plantilla
