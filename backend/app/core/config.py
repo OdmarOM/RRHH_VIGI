@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8090
     # En producción el frontend se sirve en el mismo origen, por lo que
-    # CORS no es estrictamente necesario; se mantienen los orígenes de
-    # desarrollo y se puede ampliar vía variable de entorno.
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # CORS normalmente no es necesario, pero mantenemos el origen propio
+    # y los de desarrollo por si se accede desde otro puerto o dominio.
+    cors_origins: list[str] = ["http://localhost:8090", "http://127.0.0.1:8090", "http://localhost:5173", "http://127.0.0.1:5173"]
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
