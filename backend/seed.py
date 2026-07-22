@@ -15,21 +15,8 @@ with SessionLocal() as db:
     db.flush()
 
     super_rol = db.scalar(select(Rol).where(Rol.nombre == RolNombre.SUPERUSUARIO))
-    vigilante_rol = db.scalar(select(Rol).where(Rol.nombre == RolNombre.VIGILANTE))
-    supervisor_rol = db.scalar(select(Rol).where(Rol.nombre == RolNombre.SUPERVISOR))
-    rrhh_rol = db.scalar(select(Rol).where(Rol.nombre == RolNombre.RRHH))
-    admin_rol = db.scalar(select(Rol).where(Rol.nombre == RolNombre.ADMINISTRADOR))
-    
     if not db.scalar(select(UsuarioSistema).where(UsuarioSistema.username == "super")):
         db.add(UsuarioSistema(username="super", password_hash=hash_password("super123"), rol_id=super_rol.id, activo=True))
-    if not db.scalar(select(UsuarioSistema).where(UsuarioSistema.username == "vigilante")):
-        db.add(UsuarioSistema(username="vigilante", password_hash=hash_password("vigilante123"), rol_id=vigilante_rol.id, activo=True))
-    if not db.scalar(select(UsuarioSistema).where(UsuarioSistema.username == "supervisor")):
-        db.add(UsuarioSistema(username="supervisor", password_hash=hash_password("supervisor123"), rol_id=supervisor_rol.id, activo=True))
-    if not db.scalar(select(UsuarioSistema).where(UsuarioSistema.username == "rrhh")):
-        db.add(UsuarioSistema(username="rrhh", password_hash=hash_password("rrhh123"), rol_id=rrhh_rol.id, activo=True))
-    if not db.scalar(select(UsuarioSistema).where(UsuarioSistema.username == "admin")):
-        db.add(UsuarioSistema(username="admin", password_hash=hash_password("admin123"), rol_id=admin_rol.id, activo=True))
     db.flush()
 
     departamentos = [
@@ -43,7 +30,7 @@ with SessionLocal() as db:
         "SÚPER",
         "LIMPIEZA"
     ]
-    
+
     for nombre in departamentos:
         if not db.scalar(select(Departamento).where(Departamento.nombre == nombre)):
             db.add(Departamento(nombre=nombre))
@@ -54,7 +41,7 @@ with SessionLocal() as db:
         db.add(plantilla_matutino)
         db.flush()
 
-        for dia in range(0, 5):
+        for dia in range(0, 6):
             db.add(DetallePlantillaTurno(
                 plantilla_id=plantilla_matutino.id,
                 dia_semana=dia,
@@ -63,12 +50,19 @@ with SessionLocal() as db:
                 tolerancia_minutos=15
             ))
 
+        db.add(DetallePlantillaTurno(
+            plantilla_id=plantilla_matutino.id,
+            dia_semana=6,
+            es_descanso=True,
+            tolerancia_minutos=15
+        ))
+
     if not db.scalar(select(PlantillaTurno).where(PlantillaTurno.nombre == "Vespertino")):
         plantilla_vespertino = PlantillaTurno(nombre="Vespertino", descripcion="Turno de 2:00 PM a 10:00 PM")
         db.add(plantilla_vespertino)
         db.flush()
 
-        for dia in range(0, 5):
+        for dia in range(0, 6):
             db.add(DetallePlantillaTurno(
                 plantilla_id=plantilla_vespertino.id,
                 dia_semana=dia,
@@ -76,7 +70,14 @@ with SessionLocal() as db:
                 hora_salida_oficial=time(22, 0),
                 tolerancia_minutos=15
             ))
-    
+
+        db.add(DetallePlantillaTurno(
+            plantilla_id=plantilla_vespertino.id,
+            dia_semana=6,
+            es_descanso=True,
+            tolerancia_minutos=15
+        ))
+
     db.commit()
 
-print("Seed de producción completado - Base de datos limpia con usuarios base y turnos configurados")
+print("Seed de producción completado - Base de datos limpia con usuario super, areas y turnos Matutino/Vespertino")
